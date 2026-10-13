@@ -1,0 +1,3 @@
+Rather than building a toy ETL with clean data, I built an end-to-end Medallion pipeline designed to handle real-world ingestion flaws. I generated a synthetic e-commerce feed with ambiguous date formats, corrupt prices, and duplicate orders.
+
+The pipeline runs on a standalone Spark cluster in Docker, standardizes the Bronze layer to Silver, isolates corrupt rows into a quarantine layer with diagnostic reason codes, and computes Gold marts. For serving, it uses a two-phase idempotent load into a PostgreSQL star schema via staging tables, and runs automated reconciliation tests comparing Spark SQL against Postgres SQL to guarantee data parity.
