@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: regional-ecom-postgres
+    environment:
+      POSTGRES_DB: regional_ecom
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - spark-net
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d regional_ecom"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: regional-ecom-spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+      - ./:/opt/spark-app
+    networks:
+      - spark-net
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: regional-ecom-spark-worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2G
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./:/opt/spark-app
+    networks:
+      - spark-net
+
+  spark-job:
+    image: apache/spark:3.5.1
+    container_name: regional-ecom-spark-job
+    command: ["tail", "-f", "/dev/null"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+    environment:
+      SPARK_MASTER: spark://spark-master:7077
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: regional_ecom
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      SPARK_SUBMIT_ARGS: "--packages io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3 pyspark-shell"
+    volumes:
+      - ./:/opt/spark-app
+    working_dir: /opt/spark-app
+    networks:
+      - spark-net
+
+volumes:
+  pgdata:
+
+networks:
+  spark-net:
