@@ -1,7 +1,14 @@
 """SparkSession builder configured for Delta Lake and PostgreSQL JDBC."""
 
 import os
+import sys
 from pyspark.sql import SparkSession
+
+# On Windows, system SPARK_HOME (e.g. C:\spark) often conflicts with the venv's PySpark/Scala version.
+# Ensure PySpark uses the virtual environment's bundled distribution instead.
+if sys.platform == "win32" and "SPARK_HOME" in os.environ:
+    if not os.environ["SPARK_HOME"].startswith(sys.prefix):
+        del os.environ["SPARK_HOME"]
 
 
 def get_spark_session(
