@@ -64,6 +64,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       SPARK_SUBMIT_ARGS: "--packages io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3 pyspark-shell"
+      PYTHONPATH: "/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip:/opt/spark-app"
     volumes:
       - ./:/opt/spark-app
     working_dir: /opt/spark-app
