@@ -10,6 +10,9 @@ if sys.platform == "win32" and "SPARK_HOME" in os.environ:
     if not os.environ["SPARK_HOME"].startswith(sys.prefix):
         del os.environ["SPARK_HOME"]
 
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
 
 def get_spark_session(
     app_name: str = "RegionalEcomLakehouse",
@@ -34,6 +37,8 @@ def get_spark_session(
         .config("spark.sql.shuffle.partitions", os.getenv("SPARK_SHUFFLE_PARTITIONS", "4"))
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
+        .config("spark.pyspark.python", sys.executable)
+        .config("spark.pyspark.driver.python", sys.executable)
     )
 
     return builder.getOrCreate()
