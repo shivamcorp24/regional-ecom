@@ -1,4 +1,4 @@
-"""Gold Mart 1: Monthly revenue, order volume, and average order value."""
+"""Computes monthly revenue and order totals."""
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, countDistinct, round as spark_round, sum as spark_sum
@@ -6,14 +6,14 @@ from pyspark.sql.types import DecimalType, IntegerType
 
 
 def compute_monthly_revenue(orders_df: DataFrame, date_df: DataFrame) -> DataFrame:
-    """Aggregates financial performance metrics by calendar year and month."""
+    """Groups orders by year and month to aggregate revenue and order volume."""
     joined_df = orders_df.join(
         date_df.select("date_key", "cal_year", "cal_month"),
         on="date_key",
         how="inner",
     )
 
-    monthly_df = (
+    return (
         joined_df.groupBy("cal_year", "cal_month")
         .agg(
             countDistinct("order_id").cast(IntegerType()).alias("total_orders"),
@@ -38,6 +38,3 @@ def compute_monthly_revenue(orders_df: DataFrame, date_df: DataFrame) -> DataFra
         )
         .orderBy("cal_year", "cal_month")
     )
-
-    return monthly_df
-

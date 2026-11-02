@@ -1,19 +1,21 @@
+"""Bronze layer ingestion pipeline for CSV datasets."""
+
 from pyspark.sql import SparkSession
 
-from src.spark.session import get_spark_session
 from jobs.bronze.csv_to_bronze import ingest_raw_csv_to_bronze
-from jobs.bronze.schema import RAW_ORDERS_SCHEMA, CUSTOMERS_SCHEMA, PRODUCTS_SCHEMA
+from jobs.bronze.schema import CUSTOMERS_SCHEMA, PRODUCTS_SCHEMA, RAW_ORDERS_SCHEMA
+from src.spark.session import get_spark_session
+
 
 def run_bronze_pipeline(
     spark: SparkSession | None = None,
     data_dir: str = "data",
     warehouse_dir: str = "warehouse",
 ) -> dict[str, int]:
-    """Runs the bronze ingestion stage for all three source datasets."""
-
+    """Ingests raw CSV files into Bronze Delta tables."""
     spark = spark or get_spark_session(app_name="BronzeIngestion")
 
-    results = {
+    return {
         "orders": ingest_raw_csv_to_bronze(
             spark=spark,
             source_path=f"{data_dir}/raw_orders.csv",
@@ -34,10 +36,6 @@ def run_bronze_pipeline(
         ),
     }
 
-    return results
-
 
 if __name__ == "__main__":
     run_bronze_pipeline()
-
-

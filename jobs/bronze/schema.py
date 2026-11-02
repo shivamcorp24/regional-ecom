@@ -1,9 +1,7 @@
-"""Bronze layer Ingestion: loads raw csv into append-only Delta tables with ingestion metadata"""
+"""Raw schemas for Bronze layer CSV ingestion."""
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import StructField, StructType, StringType
+from pyspark.sql.types import StringType, StructField, StructType
 
-# Raw Orders Schema
 RAW_ORDERS_SCHEMA = StructType([
     StructField("order_id", StringType(), True),
     StructField("customer_id", StringType(), True),
@@ -18,7 +16,6 @@ RAW_ORDERS_SCHEMA = StructType([
     StructField("order_date", StringType(), True),
 ])
 
-# Customers Schema
 CUSTOMERS_SCHEMA = StructType([
     StructField("customer_id", StringType(), True),
     StructField("first_name", StringType(), True),
@@ -30,7 +27,6 @@ CUSTOMERS_SCHEMA = StructType([
     StructField("country", StringType(), True),
 ])
 
-# Products Schema
 PRODUCTS_SCHEMA = StructType([
     StructField("product_id", StringType(), True),
     StructField("product_name", StringType(), True),

@@ -160,4 +160,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     random.seed(args.seed)
-    generate_all(records=args.records, customers=args.customers, output_dir=args.output_dir)
+    generate_all(records=args.records, customers=args.customers, output_dir=args.output_dir)
+

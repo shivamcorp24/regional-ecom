@@ -1,4 +1,4 @@
-"""Delta Lake ACID upserts (MERGE INTO), appends, and compaction (OPTIMIZE ZORDER)."""
+"""Delta Lake upsert and optimization helper functions."""
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
@@ -10,16 +10,9 @@ def upsert_delta_table(
     source_df: DataFrame,
     merge_keys: str | list[str],
 ) -> None:
-    """Executes an idempotent Delta Lake MERGE INTO upsert.
-
-    If the target Delta table does not exist:
-        Writes source DataFrame as the initial Delta table.
-    If the target Delta table exists:
-        Matches on merge_keys and updates matching rows / inserts new rows.
-    """
+    """Inserts or updates rows in a Delta table based on merge keys."""
     key_list = [merge_keys] if isinstance(merge_keys, str) else merge_keys
 
-    # 1. Initialize table if it doesn't already exist
     if not DeltaTable.isDeltaTable(spark, target_path):
         (
             source_df.write
@@ -29,11 +22,9 @@ def upsert_delta_table(
         )
         return
 
-    # 2. Build merge condition: e.g. "target.customer_id = source.customer_id"
     join_clauses = [f"target.{key} = source.{key}" for key in key_list]
     merge_condition = " AND ".join(join_clauses)
 
-    # 3. Execute ACID merge
     delta_target = DeltaTable.forPath(spark, target_path)
     (
         delta_target.alias("target")
@@ -49,7 +40,7 @@ def append_delta_table(
     target_path: str,
     source_df: DataFrame,
 ) -> None:
-    """Appends records to a Delta table (used for append-only audit & quarantine logs)."""
+    """Appends records to a Delta table."""
     (
         source_df.write
         .format("delta")
@@ -63,7 +54,7 @@ def optimize_delta_table(
     target_path: str,
     zorder_cols: list[str] | None = None,
 ) -> None:
-    """Executes Delta OPTIMIZE file compaction, optionally with Z-ORDER clustering."""
+    """Runs compaction and optional Z-ordering on a Delta table."""
     if not DeltaTable.isDeltaTable(spark, target_path):
         return
 

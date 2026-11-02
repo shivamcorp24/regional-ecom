@@ -9,7 +9,6 @@ from database.models.base import Base
 
 settings = get_settings()
 
-# Re-exported so callers have one obvious import site for the metadata.
 __all__ = [
     "Base",
     "DATABASE_URL",
@@ -52,14 +51,7 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def drop_db() -> None:
-    """Tear the warehouse down to a true pre-Alembic state.
-
-    ``alembic_version`` is not part of ``Base.metadata``, so dropping the
-    tables alone would leave a version stamp claiming the schema is at head
-    while none of it exists. The next ``alembic upgrade head`` would then no-op
-    and every later migration would apply on top of a missing schema, so the
-    stamp table goes too. The result matches ``alembic downgrade base``.
-    """
+    """Tear the warehouse down to a true pre-Alembic state."""
     Base.metadata.drop_all(bind=engine)
     with engine.begin() as connection:
         connection.execute(text("DROP TABLE IF EXISTS alembic_version"))

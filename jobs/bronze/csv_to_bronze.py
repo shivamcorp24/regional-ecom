@@ -10,7 +10,7 @@ def ingest_raw_csv_to_bronze(
     target_path: str,
     schema: StructType,
 ) -> int:
-    """Reads a CSV with explicit string schema, appends metadata, and saves as Delta Table."""
+    """Reads a CSV file, adds ingest metadata, and appends to a Delta table."""
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Source file does not exist: {source_path}")
 
@@ -21,13 +21,11 @@ def ingest_raw_csv_to_bronze(
         .load(source_path)
     )
 
-    # Ingestion lineage metadata
     bronze_df = (
         df.withColumn("ingest_ts", current_timestamp())
         .withColumn("source_file", input_file_name())
     )
 
-    # Append-only write to Delta Lake
     (
         bronze_df.write
         .format("delta")
@@ -38,4 +36,3 @@ def ingest_raw_csv_to_bronze(
     count = bronze_df.count()
     print(f"Bronze ingested: {count} rows -> {target_path}")
     return count
-

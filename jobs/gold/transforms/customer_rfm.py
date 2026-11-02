@@ -1,4 +1,4 @@
-"""Gold Mart 4: Customer RFM (Recency, Frequency, Monetary) segmentation."""
+"""Computes customer RFM scores and segments."""
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
@@ -22,15 +22,13 @@ def compute_customer_rfm(
     customers_df: DataFrame,
     reference_date=None,
 ) -> DataFrame:
-    """Calculates RFM metrics and classifies customers into loyalty/behavior segments."""
-    # 1. Determine reference date for recency calculation
+    """Calculates recency, frequency, and monetary scores per customer."""
     if reference_date is None:
         max_row = orders_df.selectExpr("max(to_date(order_ts)) as max_d").first()
         ref_date = max_row["max_d"] if max_row and max_row["max_d"] else "2025-12-31"
     else:
         ref_date = str(reference_date)
 
-    # 2. Join customer master attributes with orders
     order_subset = orders_df.select("order_id", "customer_id", "order_ts", "net_revenue")
     customer_subset = customers_df.select(
         "customer_id",
@@ -44,7 +42,6 @@ def compute_customer_rfm(
 
     joined_df = order_subset.join(customer_subset, on="customer_id", how="inner")
 
-    # 3. Aggregate customer order history
     customer_metrics_df = (
         joined_df.groupBy(
             "customer_id",
@@ -72,7 +69,6 @@ def compute_customer_rfm(
         )
     )
 
-    # 4. Assign scoring rules (1 to 4 scale)
     r_score_expr = (
         when(col("recency_days") <= 30, lit(4))
         .when(col("recency_days") <= 90, lit(3))
@@ -94,14 +90,6 @@ def compute_customer_rfm(
         .otherwise(lit(1))
     ).cast(IntegerType())
 
-    with_scores_df = (
-        customer_metrics_df
-        .withColumn("r_score", r_score_expr)
-        .withColumn("f_score", f_score_expr)
-        .withColumn("m_score", m_score_expr)
-    )
-
-    # 5. Classify segment
     rfm_segment_expr = (
         when((col("r_score") >= 3) & (col("f_score") >= 3) & (col("m_score") >= 3), lit("Champions"))
         .when((col("f_score") >= 3) & (col("m_score") >= 2), lit("Loyal Customers"))
@@ -111,8 +99,11 @@ def compute_customer_rfm(
         .otherwise(lit("Potential Loyalists"))
     )
 
-    final_rfm_df = (
-        with_scores_df
+    return (
+        customer_metrics_df
+        .withColumn("r_score", r_score_expr)
+        .withColumn("f_score", f_score_expr)
+        .withColumn("m_score", m_score_expr)
         .withColumn("rfm_segment", rfm_segment_expr)
         .select(
             "customer_id",
@@ -134,6 +125,3 @@ def compute_customer_rfm(
         )
         .orderBy(col("monetary_value").desc())
     )
-
-    return final_rfm_df
-

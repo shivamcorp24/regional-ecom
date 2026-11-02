@@ -1,4 +1,4 @@
-"""Explicit schemas for Gold Lakehouse analytical marts."""
+"""Schemas for Gold layer tables."""
 
 from pyspark.sql.types import (
     DecimalType,
@@ -9,7 +9,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-# Mart 1: Monthly Financial Performance
+# Monthly revenue mart
 GOLD_MONTHLY_REVENUE_SCHEMA = StructType([
     StructField("cal_year", IntegerType(), False),
     StructField("cal_month", IntegerType(), False),
@@ -21,7 +21,7 @@ GOLD_MONTHLY_REVENUE_SCHEMA = StructType([
     StructField("avg_order_value", DecimalType(14, 2), False),
 ])
 
-# Mart 2: Top Customers per Geographic Sales Region
+# Top customers per region mart
 GOLD_TOP_CUSTOMERS_SCHEMA = StructType([
     StructField("region", StringType(), False),
     StructField("regional_rank", IntegerType(), False),
@@ -35,7 +35,7 @@ GOLD_TOP_CUSTOMERS_SCHEMA = StructType([
     StructField("avg_order_value", DecimalType(14, 2), False),
 ])
 
-# Mart 3: Annual Category Contribution and Share
+# Category share mart
 GOLD_CATEGORY_SHARE_SCHEMA = StructType([
     StructField("cal_year", IntegerType(), False),
     StructField("category", StringType(), False),
@@ -45,7 +45,7 @@ GOLD_CATEGORY_SHARE_SCHEMA = StructType([
     StructField("revenue_share_pct", DecimalType(5, 2), False),
 ])
 
-# Mart 4: Customer RFM (Recency, Frequency, Monetary) Segmentation
+# Customer RFM mart
 GOLD_CUSTOMER_RFM_SCHEMA = StructType([
     StructField("customer_id", StringType(), False),
     StructField("customer_uuid", StringType(), False),
@@ -65,7 +65,7 @@ GOLD_CUSTOMER_RFM_SCHEMA = StructType([
     StructField("rfm_segment", StringType(), False),
 ])
 
-# Mart 5: Product SKU Performance and Discount Analysis
+# Product performance mart
 GOLD_PRODUCT_PERFORMANCE_SCHEMA = StructType([
     StructField("product_id", StringType(), False),
     StructField("product_uuid", StringType(), False),
@@ -81,4 +81,3 @@ GOLD_PRODUCT_PERFORMANCE_SCHEMA = StructType([
     StructField("category_rank", IntegerType(), False),
     StructField("overall_rank", IntegerType(), False),
 ])
-

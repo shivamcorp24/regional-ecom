@@ -1,15 +1,17 @@
-# Python-generated files
+# Python cache
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
 
-# Virtual environments
-.venv
+# Virtual environment
+.venv/
 
+# Environment variables
 .env
 
-# source data
+# Data landing and Lakehouse storage
 data/
+warehouse/
+
+# Runtime logs
+logs/
+derby.log

@@ -1,5 +1,6 @@
-"""Silver Layer Pipeline: Cleans dimensions, generates dense calendar, validates quality, and upserts."""
+"""Silver layer pipeline: cleans dimensions, generates calendar, validates orders, and upserts tables."""
 
+from typing import Any
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 
@@ -16,45 +17,27 @@ def run_silver_pipeline(
     bronze_dir: str = "warehouse/bronze",
     silver_dir: str = "warehouse/silver",
     quarantine_dir: str = "warehouse/quarantine",
-) -> dict:
-    """Executes the complete Silver Medallion pipeline stage.
-
-    Steps:
-      1. Load Bronze Delta tables (customers, products, orders).
-      2. Clean customer and product dimensions with deterministic UUID5; upsert to Silver.
-      3. Deduplicate raw orders on primary order_id.
-      4. Parse mixed date formats via shape-based regex routing.
-      5. Generate a dense, gap-free calendar dimension; upsert to Silver.
-      6. Enforce financial precision contract (gross & net revenue) and assign order_uuid via uuid5.
-      7. Validate records against quality rules; route invalid rows to quarantine Delta table.
-      8. Generate quality_report.json summary metrics.
-      9. Project clean orders star schema and upsert into Silver Delta table.
-      10. Execute OPTIMIZE ZORDER BY on silver orders.
-
-    Returns:
-        dict: Execution summary with record counts and data quality report.
-    """
+) -> dict[str, Any]:
+    """Reads Bronze tables, cleans records, isolates invalid rows, and updates Silver tables."""
     spark_session = spark or get_spark_session(app_name="SilverPipeline")
 
-    # Step 1: Load raw Bronze Delta tables
+    # Read Bronze tables
     bronze_customers_df = spark_session.read.format("delta").load(f"{bronze_dir}/customers")
     bronze_products_df = spark_session.read.format("delta").load(f"{bronze_dir}/products")
     bronze_orders_df = spark_session.read.format("delta").load(f"{bronze_dir}/orders")
 
-    # Step 2: Clean Customer and Product Dimensions, then upsert
+    # Clean and upsert Customer and Product dimensions
     clean_customers_df = clean_customers(bronze_customers_df)
     upsert_delta_table(spark_session, f"{silver_dir}/customers", clean_customers_df, merge_keys="customer_id")
 
     clean_products_df = clean_products(bronze_products_df)
     upsert_delta_table(spark_session, f"{silver_dir}/products", clean_products_df, merge_keys="product_id")
 
-    # Step 3: Deduplicate Bronze Orders on order_id
+    # Deduplicate orders and parse dates
     deduplicated_orders_df = bronze_orders_df.dropDuplicates(["order_id"])
-
-    # Step 4: Parse mixed date formats
     orders_with_dates_df = parse_mixed_dates(deduplicated_orders_df)
 
-    # Step 5: Derive date boundaries and generate dense calendar dimension
+    # Derive date bounds and generate calendar dimension
     date_bounds = (
         orders_with_dates_df.filter(col("order_ts").isNotNull())
         .selectExpr("min(to_date(order_ts)) as min_date", "max(to_date(order_ts)) as max_date")
@@ -66,12 +49,12 @@ def run_silver_pipeline(
     dense_calendar_df = generate_dense_calendar(spark_session, min_date=start_date, max_date=end_date)
     upsert_delta_table(spark_session, f"{silver_dir}/date", dense_calendar_df, merge_keys="date_key")
 
-    # Step 6: Calculate financial metrics and add deterministic order_uuid via standard uuid5
+    # Calculate financial metrics and assign order UUIDs
     orders_with_financials_df = calculate_financial_metrics(orders_with_dates_df).withColumn(
         "order_uuid", to_uuid5(col("order_id"))
     )
 
-    # Step 7: Evaluate data quality rules and split valid vs quarantine records
+    # Evaluate quality rules to split valid and quarantined records
     valid_orders_df, quarantine_orders_df = evaluate_data_quality(
         orders_with_financials_df, clean_customers_df, clean_products_df
     )
@@ -80,7 +63,7 @@ def run_silver_pipeline(
     valid_orders_count = valid_orders_df.count()
     quarantined_orders_count = quarantine_orders_df.count()
 
-    # Step 8: Persist quarantine records and generate quality report JSON
+    # Quarantine invalid records if present
     if quarantined_orders_count > 0:
         quarantine_projection_df = quarantine_orders_df.select(
             "order_id",
@@ -107,7 +90,7 @@ def run_silver_pipeline(
         report_output_path=f"{quarantine_dir}/quality_report.json",
     )
 
-    # Step 9: Project clean Silver orders star schema
+    # Project and upsert clean Silver orders
     silver_orders_projection_df = valid_orders_df.select(
         "order_id",
         "order_uuid",
@@ -125,13 +108,10 @@ def run_silver_pipeline(
         "ingest_ts",
     )
 
-    # Step 10: Upsert clean orders into Silver Delta table
     upsert_delta_table(spark_session, f"{silver_dir}/orders", silver_orders_projection_df, merge_keys="order_id")
-
-    # Step 11: Compaction and multi-dimensional Z-ORDER indexing
     optimize_delta_table(spark_session, f"{silver_dir}/orders", zorder_cols=["customer_id", "order_ts"])
 
-    pipeline_summary = {
+    return {
         "customers_count": clean_customers_df.count(),
         "products_count": clean_products_df.count(),
         "date_count": dense_calendar_df.count(),
@@ -140,9 +120,7 @@ def run_silver_pipeline(
         "quality_report": quality_report_dict,
     }
 
-    return pipeline_summary
-
 
 if __name__ == "__main__":
     summary = run_silver_pipeline()
-    print("Silver Pipeline Completed Successfully:", summary)
+    print("Silver Pipeline completed:", summary)

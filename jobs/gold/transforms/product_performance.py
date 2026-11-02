@@ -1,4 +1,4 @@
-"""Gold Mart 5: Product SKU performance, profitability, and discount analysis."""
+"""Computes product sales and discount performance."""
 
 from pyspark.sql import DataFrame, Window
 from pyspark.sql.functions import col, countDistinct, dense_rank, round as spark_round, sum as spark_sum, when
@@ -9,7 +9,7 @@ def compute_product_performance(
     orders_df: DataFrame,
     products_df: DataFrame,
 ) -> DataFrame:
-    """Calculates product volume, net revenue, discount rates, and category rankings."""
+    """Calculates order volume, revenue, and discount rates per product."""
     order_subset = orders_df.select(
         "order_id",
         "product_id",
@@ -54,7 +54,7 @@ def compute_product_performance(
     category_window = Window.partitionBy("category").orderBy(col("net_revenue").desc(), col("total_units_sold").desc())
     overall_window = Window.orderBy(col("net_revenue").desc(), col("total_units_sold").desc())
 
-    ranked_df = (
+    return (
         aggregated_df
         .withColumn("category_rank", dense_rank().over(category_window).cast(IntegerType()))
         .withColumn("overall_rank", dense_rank().over(overall_window).cast(IntegerType()))
@@ -75,6 +75,3 @@ def compute_product_performance(
         )
         .orderBy("category", "category_rank")
     )
-
-    return ranked_df
-

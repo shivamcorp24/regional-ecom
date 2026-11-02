@@ -1,4 +1,7 @@
-"""Generic repository layer over an injected SQLAlchemy Session.
+"""Repository layer over injected SQLAlchemy Sessions."""
 
-Deferred to Module 4 (plan Task 4.2/4.4), where the load shape is known.
-"""
+from database.repository.analytics import ServingAnalyticsRepository
+from database.repository.base import BaseRepository
+from database.repository.serving import ServingRepository
+
+__all__ = ["BaseRepository", "ServingRepository", "ServingAnalyticsRepository"]

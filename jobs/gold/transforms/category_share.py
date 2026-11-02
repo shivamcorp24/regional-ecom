@@ -1,4 +1,4 @@
-"""Gold Mart 3: Annual product category revenue contribution and portfolio share."""
+"""Computes annual category revenue share."""
 
 from pyspark.sql import DataFrame, Window
 from pyspark.sql.functions import col, round as spark_round, sum as spark_sum
@@ -10,7 +10,7 @@ def compute_category_share(
     products_df: DataFrame,
     date_df: DataFrame,
 ) -> DataFrame:
-    """Calculates product category revenue and % contribution per calendar year."""
+    """Calculates category revenue and percentage share per year."""
     order_subset = orders_df.select("product_id", "date_key", "quantity", "net_revenue")
     product_subset = products_df.select("product_id", "category")
     date_subset = date_df.select("date_key", "cal_year")
@@ -30,7 +30,7 @@ def compute_category_share(
     )
 
     annual_window = Window.partitionBy("cal_year")
-    share_df = (
+    return (
         category_summary_df
         .withColumn(
             "annual_net_revenue",
@@ -50,6 +50,3 @@ def compute_category_share(
         )
         .orderBy("cal_year", col("category_net_revenue").desc())
     )
-
-    return share_df
-

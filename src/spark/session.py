@@ -1,11 +1,10 @@
-"""SparkSession builder configured for Delta Lake and PostgreSQL JDBC."""
+"""SparkSession configuration for Delta Lake and PostgreSQL JDBC."""
 
 import os
 import sys
 from pyspark.sql import SparkSession
 
-# On Windows, system SPARK_HOME (e.g. C:\spark) often conflicts with the venv's PySpark/Scala version.
-# Ensure PySpark uses the virtual environment's bundled distribution instead.
+# On Windows, avoid conflicts between system SPARK_HOME and venv PySpark distribution
 if sys.platform == "win32" and "SPARK_HOME" in os.environ:
     if not os.environ["SPARK_HOME"].startswith(sys.prefix):
         del os.environ["SPARK_HOME"]
@@ -18,14 +17,7 @@ def get_spark_session(
     app_name: str = "RegionalEcomLakehouse",
     master: str | None = None,
 ) -> SparkSession:
-    """Build or retrieve a SparkSession configured for Delta Lake.
-
-    Configures:
-    - Delta Lake ACID extensions & catalog (DeltaCatalog)
-    - PostgreSQL JDBC driver package
-    - Bounded shuffle partitions (preventing small-file sprawl)
-    - UTC timezone consistency
-    """
+    """Creates or retrieves a SparkSession configured with Delta Lake and PostgreSQL JDBC."""
     master_url = master or os.getenv("SPARK_MASTER", "local[*]")
 
     builder = (
@@ -37,6 +29,8 @@ def get_spark_session(
         .config("spark.sql.shuffle.partitions", os.getenv("SPARK_SHUFFLE_PARTITIONS", "4"))
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
+        .config("spark.driver.extraJavaOptions", "-Duser.timezone=UTC")
+        .config("spark.executor.extraJavaOptions", "-Duser.timezone=UTC")
         .config("spark.pyspark.python", sys.executable)
         .config("spark.pyspark.driver.python", sys.executable)
     )

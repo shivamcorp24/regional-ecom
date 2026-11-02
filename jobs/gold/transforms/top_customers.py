@@ -1,4 +1,4 @@
-"""Gold Mart 2: Top customers ranked per geographic sales region."""
+"""Ranks customers by spend per region."""
 
 from pyspark.sql import DataFrame, Window
 from pyspark.sql.functions import col, concat_ws, countDistinct, dense_rank, round as spark_round, sum as spark_sum
@@ -10,7 +10,7 @@ def compute_top_customers_per_region(
     customers_df: DataFrame,
     top_n: int | None = None,
 ) -> DataFrame:
-    """Ranks customers within each region by total spend using dense_rank."""
+    """Ranks customers within each region by total net spend."""
     customer_cols = customers_df.select(
         "customer_id",
         "customer_uuid",
@@ -71,4 +71,3 @@ def compute_top_customers_per_region(
         ranked_df = ranked_df.filter(col("regional_rank") <= top_n)
 
     return ranked_df
-
