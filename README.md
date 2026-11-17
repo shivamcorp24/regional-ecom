@@ -1,16 +1,61 @@
 # Regional E-Commerce Order & Revenue Analytics
 
-End-to-end data engineering project: generate a deliberately flawed source
-dataset, model it as a PostgreSQL star schema, then ETL it and analyse it.
+An end-to-end data engineering project. It ingests a deliberately flawed e-commerce feed,
+cleans it through a **Delta Lake Medallion pipeline** (Bronze / Silver / Gold) in PySpark,
+loads the result into a **PostgreSQL star schema**, and proves the two stores agree with an
+automated **reconciliation** step. The whole flow can run from one script or from **Airflow**.
 
-See `regional_ecom_project_plan.md` for the full module breakdown.
-
-**Status:** Modules 1 (data generation) and 2 (relational modeling) complete.
-Modules 3-5 (extract/transform/load, auditing, analytics) not yet written.
+See `regional_ecom_project_plan.md` for the module breakdown and status.
 
 ---
 
-## Star schema
+## Flow
+
+```
+services/data_generator  ──▶  data/{customers,products,raw_orders}.csv
+                                      │
+                                      ▼
+BRONZE   warehouse/bronze/        raw strings + ingest_ts, source_file. Append-only;
+                                  rows whose key already exists are skipped, so reruns
+                                  and Airflow retries do not duplicate data.
+                                      │
+                                      ▼
+SILVER   warehouse/silver/        dedupe, 5-format regex date parsing, UUID5 keys,
+         warehouse/quarantine/    DecimalType(14,2) revenue, quality rules.
+                                  Delta MERGE upserts, OPTIMIZE ZORDER on orders.
+                                  Rejected rows -> quarantine with reject_reason
+                                  + quality_report.json.
+                                      │
+                                      ▼
+GOLD     warehouse/gold/          monthly_revenue, top_customers_per_region,
+                                  category_share, customer_rfm_summary,
+                                  product_performance
+                                      │
+                                      ▼
+REVERSE-ETL  jobs/load_jdbc.py    1. Spark JDBC writes Silver into unconstrained stg_* tables
+                                  2. one Postgres transaction: TRUNCATE serving tables, then
+                                     INSERT ... SELECT (with casts) from stg_*
+                                      │
+                                      ▼
+RECONCILE    src/reconcile.py     Delta vs Postgres: row counts, financial totals, monthly and
+                                  category revenue, top spender per region.
+                                  Writes warehouse/reconciliation_report.json and raises
+                                  ReconciliationError on any drift.
+```
+
+### Quality rules (Silver)
+An order is quarantined with the first matching reason:
+`MISSING_ORDER_ID`, `INVALID_DATE_FORMAT`, `INVALID_QUANTITY`, `INVALID_PRICE`,
+`NEGATIVE_DISCOUNT`, `DISCOUNT_EXCEEDS_GROSS`, `UNKNOWN_CUSTOMER_ID`, `UNKNOWN_PRODUCT_ID`.
+Duplicate `order_id`s are dropped before validation.
+
+### Date formats handled
+`yyyy-MM-dd`, `MM/dd/yyyy`, `dd-MM-yyyy`, `yyyy/MM/dd HH:mm:ss`, `dd/MM/yyyy HH:mm`.
+The format is chosen by the *shape* of the string, because several are day/month ambiguous.
+
+---
+
+## PostgreSQL star schema
 
 ```
 ┌───────────────────────────────────────┐
@@ -26,7 +71,6 @@ Modules 3-5 (extract/transform/load, auditing, analytics) not yet written.
 │     country      VARCHAR(50)  NOT NULL│
 └──────────────────┬────────────────────┘
                    │ 1
-                   │
                    │ N
 ┌──────────────────┴────────────────────┐
 │              fact_orders              │
@@ -40,120 +84,153 @@ Modules 3-5 (extract/transform/load, auditing, analytics) not yet written.
 │     unit_price     NUMERIC(10,2) NOT NULL CHECK (>= 0)
 │     discount       NUMERIC(10,2) NOT NULL DEFAULT 0.00 CHECK (>= 0)
 │     gross_revenue  NUMERIC(14,2) NOT NULL CHECK (>= 0)
-│     net_revenue    NUMERIC(14,2) NOT NULL CHECK (>= 0)
-│                                       CHECK (<= gross_revenue)
-│                                       │
-│ ix_fact_orders_customer_id            │
-│ ix_fact_orders_product_id             │
-│ ix_fact_orders_date_key               │
+│     net_revenue    NUMERIC(14,2) NOT NULL CHECK (>= 0, <= gross_revenue)
+│ ix_fact_orders_customer_id / _product_id / _date_key
 └──────────────────┬────────────────────┘
                    │ N
-                   │
                    │ 1
 ┌──────────────────┴────────────────────┐        ┌────────────────────────────────┐
-│              dim_date                 │        │         dim_products          │
+│              dim_date                 │        │         dim_products           │
 ├───────────────────────────────────────┤        ├────────────────────────────────┤
 │ PK  date_key     INT (YYYYMMDD)       │        │ PK  product_id   UUID          │
 │     full_date    DATE NOT NULL UNIQUE │        │     product_name VARCHAR(100)  │
-│     cal_year     INT         NOT NULL │        │     category     VARCHAR(50)   │
-│     cal_quarter  INT         NOT NULL │        │     unit_price   NUMERIC(10,2) │
-│                   CHECK (BETWEEN 1-4) │        │                   CHECK (>= 0)  │
-│     cal_month    INT         NOT NULL │        └────────────────────────────────┘
-│                   CHECK (BETWEEN 1-12)│
-│     cal_day      INT         NOT NULL │
-│                   CHECK (BETWEEN 1-31)│
-│     day_of_week  VARCHAR(15)  NOT NULL│
+│     cal_year / cal_quarter (1-4)      │        │     category     VARCHAR(50)   │
+│     cal_month (1-12) / cal_day (1-31) │        │     unit_price   NUMERIC(10,2) │
+│     day_of_week  VARCHAR(15) NOT NULL │        └────────────────────────────────┘
 └───────────────────────────────────────┘
 ```
 
-`unit_price` is carried on the fact as well as the product dimension so a
-per-order price override is preserved and `gross_revenue` stays reproducible
-from the fact row alone.
+`unit_price` is on the fact as well as the product dimension so `gross_revenue` stays
+reproducible from the fact row alone. The unconstrained `stg_*` landing tables are defined in
+`database/models/staging.py`.
 
 ---
 
-## Layout
+## Project layout
 
 ```
-core/config.py            pydantic-settings; builds the SQLAlchemy URL via URL.create
-core/database.py          engine, sessionmaker, get_db() contextmanager, drop_db(), re-exports Base
-database/models/          SQLAlchemy ORM (the single DeclarativeBase lives in base.py)
-database/schema/          Pydantic DTOs mirroring the ORM
-database/repository/      generic DAL over an injected Session
-alembic/                  migrations; connection URL lives in alembic.ini
-src/generate_data.py      Module 1 generator
-data/                     generated source CSVs (gitignored)
+alembic/                    schema migrations (the only way the schema is created)
+core/
+  config.py                 pydantic-settings; builds the SQLAlchemy URL
+  database.py               engine, sessionmaker, get_db() context manager
+  landing.py                shared landing-file check (CLI and Airflow)
+dags/
+  ecom_dag_utils.py         shared DAG settings and python_module_task helper
+  ecom_medallion_dag.py     regional_ecom_medallion_pipeline (@daily)
+  mock_producer_dag.py      upstream_ecom_data_producer (manual trigger)
+database/
+  models/                   SQLAlchemy ORM models + staging tables
+  repository/serving.py     set-based staging -> serving swap (ORM path kept for small loads)
+  repository/analytics.py   Postgres queries used by reconciliation
+jobs/{bronze,silver,gold}/  pipeline.py coordinator + schema/transforms per layer
+jobs/load_jdbc.py           reverse-ETL: Spark JDBC staging + serving swap
+scripts/create_airflow_db.py  creates the Airflow metadata DB (run by airflow-init)
+services/data_generator/    synthetic feed generator (oneshot / continuous)
+src/reconcile.py            Delta vs Postgres parity checks
+src/spark/session.py        SparkSession with Delta Lake + Postgres JDBC
+tests/                      pytest: generator, landing check, Bronze, Gold tie-break (Spark, local),
+                            serving swap (needs migrated Postgres; skips if it is down)
+Dockerfile                  Airflow image: Java + a project virtualenv
+docker-compose.yml          Postgres, Spark master/worker, Airflow
+run_pipeline.py             run all stages in one process
 ```
 
 ---
 
 ## Setup
 
+Requirements: Python 3.11+, [uv](https://github.com/astral-sh/uv), Docker.
+
 ```bash
 uv sync
-cp .env.example .env          # adjust credentials if needed
-docker compose up -d
+cp .env.example .env     # then fill in the Airflow values below
+docker compose up -d postgres
+uv run alembic upgrade head
 ```
 
-The compose file maps host `5434` to container `5432`; `POSTGRES_PORT` in `.env`
-must match the host side. There is no healthcheck, so `up -d` returns as soon as
-the container starts rather than when Postgres is accepting connections. If
-`alembic upgrade head` fails to connect on a cold start, wait a second and retry.
+`.env` must define the three Airflow values that compose requires:
 
-The `pgdata` volume is owned by the image's Postgres major version, which is
-pinned to `postgres:16`. Changing that tag needs `docker compose down -v`
-first, otherwise the server exits instead of starting on the old data
-directory.
+| Variable | How to generate |
+|---|---|
+| `AIRFLOW_FERNET_KEY` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `AIRFLOW_WEBSERVER_SECRET_KEY` | `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `AIRFLOW_ADMIN_PASSWORD` | any password; user name is `AIRFLOW_ADMIN_USER` (default `admin`) |
+
+Postgres listens on host port `5434`; keep `POSTGRES_PORT=5434` and `POSTGRES_HOST=localhost` in
+`.env` for host-side runs (containers use `postgres:5432` automatically). The URL in
+`alembic.ini` is hardcoded and must match. `postgres:16` is pinned; changing the major version
+needs `docker compose down -v`.
+
+## Run it
+
+### One command (host)
+```bash
+uv run python -m services.data_generator.run_service --mode oneshot --output-dir data
+uv run python run_pipeline.py
+```
+
+### Stage by stage
+```bash
+uv run python -m jobs.bronze.pipeline
+uv run python -m jobs.silver.pipeline
+uv run python -m jobs.gold.pipeline
+uv run python -m jobs.load_jdbc
+uv run python -m src.reconcile
+```
+
+### Airflow
+```bash
+docker compose up -d            # builds the image on first run
+```
+Open http://localhost:8085 and sign in with the admin user from `.env`. Trigger
+`upstream_ecom_data_producer`, then `regional_ecom_medallion_pipeline`:
+`check_landing_data` → `bronze_ingestion` → `silver_transformation` → `gold_marts` →
+`reverse_etl_serving` → `parity_reconciliation`.
+
+Notes: Airflow runs Spark in `local[*]` inside its own container (the Spark master/worker in
+compose are not used by the DAGs). The image keeps the project dependencies in a separate
+virtualenv because Airflow 2.9 pins SQLAlchemy 1.4; keep the dependency list in the `Dockerfile`
+in sync with `pyproject.toml`. The two DAGs are not linked, so the pipeline DAG does not start
+automatically after the producer.
+
+### Tests
+```bash
+uv run pytest
+```
 
 ## Migrations
 
 ```bash
 uv run alembic upgrade head          # apply
 uv run alembic upgrade head --sql    # print DDL without connecting
-uv run alembic downgrade base        # tear down (plan Task 2.3 reset)
+uv run alembic downgrade base        # tear down
 ```
 
-The connection URL is set in `alembic.ini` under `sqlalchemy.url` and must match
-the host/port in `.env`. The `database/models/__init__.py` import is what
-registers the tables on `Base.metadata` for `--autogenerate`.
+There is deliberately no `init_db()`: `create_all` would build tables without an Alembic version
+stamp. `core.database.drop_db()` is the hard reset (drops tables and `alembic_version`).
 
-Alembic is the only way the schema is created. There is deliberately no
-`init_db()`: `create_all` would build tables without a version stamp, so the
-next `upgrade head` would fail on `CREATE TABLE` against tables that already
-exist. `core.database.drop_db()` is the hard reset - it drops the tables *and*
-the `alembic_version` stamp, leaving the same pre-Alembic state as
-`downgrade base`.
+## Source data
 
-## Generate source data
+The generator writes `customers.csv`, `products.csv` and `raw_orders.csv` into `data/`
+(gitignored). Defaults: 950 orders (plus 50 duplicates) and 50 customers; `--seed` makes runs
+reproducible. The feed contains duplicate rows, five date formats, NULL names/cities/discounts,
+and negative quantities and prices. `--mode continuous` appends 100 orders every `--interval`
+seconds. Business keys in the feed are plain integers; Silver derives deterministic UUID5 keys.
+`src/generate_data.py` is an older standalone generator that the pipeline no longer uses.
 
-```bash
-uv run python -m src.generate_data                        # 1,000 orders
-uv run python -m src.generate_data --records 50000        # bigger fixture
-uv run python -m src.generate_data --seed 7 --customers 200
-```
+## Reconciliation
 
-Writes `data/customers.csv`, `data/products.csv`, `data/raw_orders.csv`.
-Keys are deterministic `uuid5` values, so a given `--seed` always reproduces
-byte-identical files - which is what lets the eventual load be idempotent.
+`src/reconcile.py` compares Delta Lake with Postgres on:
+1. row counts for the four serving tables
+2. totals: orders, quantity, gross revenue, discount, net revenue (exact to the cent)
+3. monthly net revenue
+4. category revenue per year
+5. rank-1 customer per region (ties broken by `customer_uuid` on both sides)
 
-The order feed is deliberately flawed (plan Task 1.2): duplicate rows, five
-mixed date formats, NULL customer/city/product/discount fields, and negative
-quantities and prices. `--help` lists every flag.
+A failure raises `ReconciliationError`, which fails the Airflow task.
 
----
-
-## Notes for the next module
-
-Open decisions that block the transform stage:
-
-1. **Negative values.** `quantity < 0` and `unit_price < 0` both violate the
-   new CHECK constraints. Drop, `abs()`, clamp, or quarantine the rows?
-2. **Ambiguous dates.** Three of the five formats are day/month ambiguous, so
-   `pd.to_datetime(..., format="mixed")` silently mis-parses them. Parsing has
-   to be per-format, but which format a given value used is not recorded - the
-   only unambiguous signal is the shape of the string.
-3. **Missing time-of-day.** Two of the five formats carry no time, so
-   `order_ts` has to default to `00:00:00` for those rows.
-4. **Denormalized copies.** The feed repeats customer name/city and product
-   name/category. They agree with the masters except where NULLed, so the
-   master is the safer source; decide whether to reconcile or trust the feed.
+## Known limitations
+- Each load fully replaces the serving tables (truncate and reload); there is no incremental load.
+- A failed staging write can leave `stg_*` tables half-updated; the serving swap only runs after all
+  four writes succeed, so serving tables are not affected.
+- Postgres still uses default `postgres`/`postgres` credentials from `.env`.

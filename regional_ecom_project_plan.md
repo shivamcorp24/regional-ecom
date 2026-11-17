@@ -1,11 +1,12 @@
-# Project Plan: Regional E-Commerce Order & Revenue Analytics (Databricks Lakehouse Edition)
+# Project Plan: Regional E-Commerce Order & Revenue Analytics (Delta Lakehouse Edition)
 
 ## Project Overview
-An end-to-end modern data engineering project engineered for enterprise Lakehouse architectures:
-a flawed raw multi-region source feed, an **ACID-compliant PySpark Medallion pipeline**
-(Bronze / Silver / Gold in **Delta Lake**) with automated data validation, 
-production-tuned Spark JDBC reverse-ETL into an **operational PostgreSQL serving layer**, 
-and dual-track analytics validated across **Databricks Spark SQL and Postgres SQL**.
+An end-to-end data engineering project: a flawed raw multi-region source feed, a PySpark
+**Medallion pipeline** (Bronze / Silver / Gold in **Delta Lake**) with rule-based validation and
+quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and an automated
+**reconciliation** that proves the Lakehouse and the serving store agree.
+
+**Status: all modules complete and verified end to end** (CLI and Airflow, reconciliation PASSED).
 
 ---
 
@@ -13,138 +14,114 @@ and dual-track analytics validated across **Databricks Spark SQL and Postgres SQ
 ```
 [ Raw CSV source: raw_orders.csv / customers.csv / products.csv ]
           │
-          │  PySpark Batch Pipeline (Docker / Databricks Runtime)
+          │  PySpark batch pipeline (host, or Airflow container in local mode)
           ▼
-  ┌─ BRONZE ─ raw files landed as append-only Delta tables + ingestion metadata
-  │      │      warehouse/bronze/ (Delta format, schema on read)
+  ┌─ BRONZE ─ append-only Delta tables + ingest_ts, source_file
+  │      │      warehouse/bronze/  (rows with an existing key are skipped on rerun)
   │      ▼
-  ├─ SILVER ─ dedupe, per-format regex date parsing, master reconciliation,
-  │      │    DecimalType(14,2) revenue metrics, Great Expectations validation
-  │      │    Delta MERGE INTO for idempotent upserts + quarantine partition
-  │      │    OPTIMIZE ... ZORDER BY (customer_id, order_date)
-  │      │      warehouse/silver/ (Delta Lake Star Schema)
-  │      │      warehouse/quarantine/ (Delta format + quality_report.json)
+  ├─ SILVER ─ dedupe, regex date parsing, UUID5 keys, DecimalType(14,2) revenue,
+  │      │    quality rules, Delta MERGE upserts, OPTIMIZE ZORDER (orders)
+  │      │      warehouse/silver/
+  │      │      warehouse/quarantine/  (+ quality_report.json)
   │      ▼
-  ├─ GOLD ─── business aggregations (monthly_revenue, top_customers, category_share)
-  │      │      warehouse/gold/ (Delta Lake Marts for Lakehouse OLAP)
+  ├─ GOLD ─── monthly_revenue, top_customers_per_region, category_share,
+  │      │    customer_rfm_summary, product_performance   (warehouse/gold/)
   │      ▼
-  ├─ REVERSE ETL ─── Spark JDBC with Production Tuning (batchsize=10000, bounded numPartitions)
-  │                   stg_* staging tables ➔ atomic transaction load into PostgreSQL
-  │                   (serving datastore for low-latency apps & operational dashboards)
+  ├─ REVERSE ETL ─ Spark JDBC (batchsize=10000, 4 partitions) into stg_* tables,
+  │                then one Postgres transaction: TRUNCATE + INSERT ... SELECT
   ▼
-[ PostgreSQL Serving Store ]              [ Primary Lakehouse (Delta Lake) ]
-  └── Operational APIs / Reporting          └── Historical Analytics / Databricks SQL
-      (sub-second single-row lookups)           (large-scale queries, Time Travel, ML)
+[ PostgreSQL serving store ]  ──▶  src/reconcile.py compares it with Delta
 ```
 
-### Layer Contract (Lakehouse Medallion)
-| Layer | Content | Format | Governance & Features |
+### Layer contract
+| Layer | Content | Format | Features |
 |---|---|---|---|
-| **Bronze** | Raw source, byte-faithful + `ingest_ts`, `source_file` | **Delta Lake** | Append-only, transaction history via `_delta_log` |
-| **Silver** | Cleaned fact + dimension tables; validated via rules | **Delta Lake** | `MERGE INTO` upserts, `DecimalType(14,2)` precision, `Z-ORDER` indexing |
-| **Quarantine** | Rejected records with diagnostic `reject_reason` | **Delta Lake** | Diagnostic schema with automated DQ report |
-| **Gold** | Aggregated analytical marts | **Delta Lake** | Partitioned by `cal_year`, compaction via `OPTIMIZE` |
-| **Serving (Postgres)** | Operational star schema (`dim_*`, `fact_orders`) | **Postgres 16** | Unconstrained `stg_*` staging; strict serving schema |
+| **Bronze** | Raw source as strings + `ingest_ts`, `source_file` | Delta | Append-only, key-based skip of already-ingested rows |
+| **Silver** | Cleaned dimensions, calendar and orders | Delta | `MERGE INTO` upserts, `DecimalType(14,2)`, Z-ORDER |
+| **Quarantine** | Rejected orders with `reject_reason` | Delta | `quality_report.json` with a rejection breakdown |
+| **Gold** | Analytical marts | Delta | Partitioned, compacted with `OPTIMIZE` |
+| **Serving** | `dim_*`, `fact_orders` (+ unconstrained `stg_*`) | Postgres 16 | Constraints and foreign keys enforced |
 
 ---
 
-## Module 1: Data Generation & Source Setup
-*Generated by `src/generate_data.py`; completed.*
+## Module 1: Data Generation — complete
+*`services/data_generator/` (`generator.py`, `run_service.py`).*
 
-- **Task 1.1:** `raw_orders.csv` (1,000–50,000 records) + `customers.csv` + `products.csv`.
-- **Task 1.2:** Injected defects: exact duplicate rows, 5 mixed date formats
-  (3 day/month-ambiguous), NULL city/name/discount, negative quantity/price.
-- Keys are deterministic `uuid5` — regeneration is byte-identical (foundation for reproducible tests).
+- **1.1** `raw_orders.csv` (default 950 orders + 50 duplicates), `customers.csv`, `products.csv`.
+- **1.2** Injected defects: exact duplicate rows, 5 mixed date formats (several day/month ambiguous),
+  NULL names/cities/discounts, negative quantity and price.
+- **1.3** `oneshot` and `continuous` modes; continuous appends batches without overwriting earlier orders.
+- The feed uses integer business keys; Silver derives deterministic UUID5 keys.
+- `src/generate_data.py` is the original standalone generator and is no longer used.
 
----
+## Module 2: Relational Serving Model (PostgreSQL) — complete
+- **2.1** Star schema: `dim_customers`, `dim_products`, `dim_date`, `fact_orders`.
+- **2.2** DDL through Alembic (`uv run alembic upgrade head`).
+- **2.3** Reset with `alembic downgrade base` or `drop_db()`.
+- **2.4** Unconstrained staging tables `stg_*` in `database/models/staging.py`.
 
-## Module 2: Relational Serving Data Modeling (PostgreSQL)
-*PostgreSQL serves as the low-latency Operational Data Store (ODS).*
+## Module 3: Platform (Docker & Spark) — complete
+- **3.1** `docker-compose.yml`: `postgres` (healthcheck), `spark-master`, `spark-worker`,
+  `spark-job` runner, `data-generator`, and Airflow (`airflow-init`, webserver, scheduler).
+- **3.2** `src/spark/session.py`: Delta Lake extension and catalog, Postgres JDBC package, UTC timezone.
+- **3.3** `Dockerfile`: Airflow 2.9.3 image with Java and a separate project virtualenv
+  (Airflow pins SQLAlchemy 1.4, which conflicts with the project).
+- **3.4** Secrets (Airflow keys, admin password, Postgres credentials) are read from `.env`.
+- Airflow runs Spark in `local[*]` inside its container; the standalone cluster is not used by the DAGs.
 
-- **Task 2.1:** Star-schema ER diagram (`dim_customers`, `dim_products`, `dim_date`, `fact_orders`).
-- **Task 2.2:** DDL via Alembic (`uv run alembic upgrade head`).
-- **Task 2.3:** Reset via `alembic downgrade base` / `drop_db()`.
-- **Task 2.4:** Create **unconstrained staging tables**:
-  `stg_customers`, `stg_products`, `stg_date`, `stg_orders` in `database/models/staging.py`
-  (Core `Table` definitions registered on `Base.metadata` with `Text` keys and zero constraints).
+## Module 4: Medallion ETL — complete
 
----
+### 4.1 Bronze (`jobs/bronze/`)
+- Read CSVs with explicit string schemas, add `ingest_ts` and `source_file`.
+- Append to Delta, skipping rows whose key (`order_id`, `customer_id`, `product_id`) already exists.
 
-## Module 3: Spark Platform (Docker & Databricks Compatibility)
-**Objective:** Reproducible Spark cluster with Delta Lake support.
+### 4.2 Silver (`jobs/silver/`, `transforms/`)
+- Shape-based regex date parser for 5 formats (`dates.py`); dense calendar between min and max order date.
+- Customer and product cleaning with deterministic UUID5 keys (`dimensions.py`).
+- `DecimalType(14,2)` gross and net revenue (`financials.py`).
+- Rule-based quality checks and quarantine with `reject_reason` (`quality.py`):
+  `MISSING_ORDER_ID`, `INVALID_DATE_FORMAT`, `INVALID_QUANTITY`, `INVALID_PRICE`,
+  `NEGATIVE_DISCOUNT`, `DISCOUNT_EXCEEDS_GROSS`, `UNKNOWN_CUSTOMER_ID`, `UNKNOWN_PRODUCT_ID`.
+  (Hand-written rules; Great Expectations is not used.)
+- Delta `MERGE INTO` upserts and `OPTIMIZE ... ZORDER BY (customer_id, order_ts)` (`upsert.py`).
 
-- **Task 3.1:** Extended `docker-compose.yml`:
-  - `postgres` (with `pg_isready` healthcheck on `spark-net`).
-  - `spark-master` and `spark-worker` (`apache/spark:3.5.1` or Databricks Runtime container).
-  - `spark-job` runner service with Delta Lake packages (`io.delta:delta-spark_2.12:3.2.0`) and PostgreSQL JDBC driver.
-- **Task 3.2:** `src/spark/session.py`:
-  SparkSession builder configuring:
-  - `spark.sql.extensions = io.delta.sql.DeltaSparkSessionExtension`
-  - `spark.sql.catalog.spark_catalog = org.apache.spark.sql.delta.catalog.DeltaCatalog`
-  - Shuffle partitions and memory limits.
+### 4.3 Gold (`jobs/gold/`)
+- `monthly_revenue`, `top_customers_per_region` (`DENSE_RANK` by region, ties broken by `customer_uuid`),
+  `category_share`, `customer_rfm_summary`, `product_performance`.
 
----
+## Module 5: Serving Load (Reverse-ETL) — complete
+- **5.1** `jobs/load_jdbc.py`: DataFrames are cached and counted once, then written to `stg_*`
+  with `batchsize=10000`, 4 partitions, `READ_COMMITTED`.
+- **5.2** Atomic swap in `database/repository/serving.py`, one transaction:
+  `TRUNCATE ... CASCADE`, then `INSERT ... SELECT` with casts (dimensions first, then facts;
+  NULL discount becomes `0.00`). A failure rolls everything back. An ORM row-by-row path remains
+  for small loads.
 
-## Module 4: Medallion ETL (Delta Lake Engine)
-**Objective:** Bronze → Silver (clean & upsert) → Gold (marts) using Delta Lake features.
-
-### 4.1 Bronze (`jobs/bronze.py`)
-- Read CSVs with explicit string schemas.
-- Write to `warehouse/bronze/` using `format("delta").mode("append")`.
-
-### 4.2 Silver — Cleaning, Quality & Upsert (`jobs/silver.py`, `transforms/*.py`)
-- **Shape-based Regex Date Parser:** Format routing across 5 patterns in `transforms/dates.py`.
-- **Master Dimension Reconciliation:** CRM/PIM master tables win over order feed denormalized fields.
-- **Financial Precision Contract:** Explicit `DecimalType(14, 2)` casts for `unit_price`, `discount`, `gross_revenue`, `net_revenue`.
-- **Dense Calendar Generation:** Continuous calendar between `min(order_date)` and `max(order_date)`.
-- **ACID Upserts via Delta MERGE:**
-  Use `DeltaTable.forPath(...).alias("target").merge(..., "source.customer_id = target.customer_id")`
-  to support idempotent updates rather than destructive drops.
-- **Automated Data Quality & Quarantine:**
-  Evaluate records using Great Expectations / validation rules; route negative values or bad dates
-  to `warehouse/quarantine/` with `reject_reason` and output `quality_report.json`.
-- **Compaction & Indexing:**
-  Execute `OPTIMIZE silver_orders ZORDER BY (customer_id, order_ts)` to eliminate the small-file problem.
-
-### 4.3 Gold Lakehouse Marts (`jobs/gold.py`)
-- `gold.monthly_revenue` (calendar year/month net revenue).
-- `gold.top_customers_per_region` (`DENSE_RANK() OVER (PARTITION BY region ORDER BY total_spend DESC)`).
-- `gold.category_share` (% category contribution).
-- Saved as Delta tables for high-performance BI engine queries (Databricks SQL / Power BI).
-
----
-
-## Module 5: High-Throughput Serving Load (Reverse-ETL)
-**Objective:** High-throughput, connection-safe JDBC load of Delta Silver into PostgreSQL.
-
-- **Task 5.1 (Production JDBC Tuning):**
-  `jobs/load_jdbc.py` writes to `stg_*` with tuned parameters:
-  - `batchsize = 10000` (minimizes network round-trips).
-  - `numPartitions = 4` (prevents connection exhaustion on PostgreSQL connection pool).
-  - `isolationLevel = "READ_COMMITTED"`.
-- **Task 5.2 (Atomic Transactional Swap):**
-  Host-side single transaction (`psycopg2` via `core/database.py`):
-  1. `TRUNCATE fact_orders, dim_customers, dim_products, dim_date CASCADE`
-  2. `INSERT INTO dim_* SELECT CAST(...) FROM stg_*` (dimensions first)
-  3. `INSERT INTO fact_orders SELECT ... FROM stg_orders`
-  4. Atomic commit / rollback on error.
+## Module 6: Reconciliation & Orchestration — complete
+- **6.1** Queries for the Postgres side in `database/repository/analytics.py`.
+- **6.2** `src/reconcile.py` checks row counts, financial totals, monthly and category revenue, and
+  the top spender per region; writes `warehouse/reconciliation_report.json`; raises on drift.
+- **6.3** Airflow DAGs in `dags/`: `regional_ecom_medallion_pipeline` (`@daily`) and
+  `upstream_ecom_data_producer` (manual), sharing helpers in `ecom_dag_utils.py`.
+- **6.4** `run_pipeline.py` runs all stages in one process. `core/landing.py` is the shared
+  landing-file check.
+- **6.5** Tests in `tests/` cover the generator, the landing check, Bronze idempotency, the Gold
+  top-customer tie-break (Spark, local, no Docker) and the serving swap (needs Postgres; skips if
+  it is down). Silver, the reconciliation logic and the DAGs are not covered.
 
 ---
 
-## Module 6: Dual-Track Reconciliation & Workflows
-**Objective:** Automated validation proving parity between Lakehouse and Serving Store.
+## Definition of Done
+- [x] Delta Lake features (MERGE INTO, OPTIMIZE Z-ORDER) used in Silver and Gold.
+- [x] Spark and Postgres match to the cent (reconciliation PASSED, 12 of 12 checks).
+- [x] JDBC writes tuned with `batchsize=10000` and 4 partitions.
+- [x] Pipeline runs with one command (`run_pipeline.py`) or through Airflow (all 6 tasks succeed).
+- [x] Bronze reruns do not duplicate data.
 
-- **Task 6.1 — Dual-Track Queries (`sql/analytics.sql`):**
-  Identical SQL executed over PostgreSQL and Delta Lake.
-- **Task 6.2 — Automated Reconciliation (`src/reconcile.py`):**
-  Asserts exact equality of row counts and revenue down to the cent.
-- **Task 6.3 — Workflow Orchestration:**
-  Orchestrate stages via Databricks Workflows / Airflow DAG definitions (`dags/ecom_medallion_dag.py`).
-
----
-
-## Definition of Done (Databricks Ready)
-- Delta Lake ACID features (MERGE INTO, OPTIMIZE Z-ORDER, Time Travel) verified in Silver and Gold.
-- Zero floating-point drift: Spark SQL and PostgreSQL match exact monetary figures.
-- Spark JDBC writes tuned with `batchsize=10000` and bounded concurrency.
-- End-to-end pipeline executable via one command or orchestrated Airflow/Databricks DAG.
+## Open items
+- The two DAGs are not linked; the pipeline DAG does not start when the producer finishes.
+- Full table reload on every run; no incremental load.
+- Staging tables can be left half-updated after a failed write (serving tables stay safe).
+- Default `postgres`/`postgres` database credentials in `.env`.
+- Unused code that could be removed: `src/generate_data.py`, `database/schema/`,
+  `database/repository/base.py`, `jobs/silver/schema.py`, `jobs/gold/schema.py`.
