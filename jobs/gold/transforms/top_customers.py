@@ -48,7 +48,8 @@ def compute_top_customers_per_region(
         .withColumn("customer_name", concat_ws(" ", col("first_name"), col("last_name")))
     )
 
-    region_window = Window.partitionBy("region").orderBy(col("total_spend").desc(), col("customer_id").asc())
+    # Tie-break on customer_uuid so ranking matches the Postgres query (ordered by UUID).
+    region_window = Window.partitionBy("region").orderBy(col("total_spend").desc(), col("customer_uuid").asc())
     ranked_df = (
         customer_spend_df
         .withColumn("regional_rank", dense_rank().over(region_window).cast(IntegerType()))

@@ -21,18 +21,21 @@ def run_bronze_pipeline(
             source_path=f"{data_dir}/raw_orders.csv",
             target_path=f"{warehouse_dir}/bronze/orders",
             schema=RAW_ORDERS_SCHEMA,
+            key_col="order_id",
         ),
         "customers": ingest_raw_csv_to_bronze(
             spark=spark,
             source_path=f"{data_dir}/customers.csv",
             target_path=f"{warehouse_dir}/bronze/customers",
             schema=CUSTOMERS_SCHEMA,
+            key_col="customer_id",
         ),
         "products": ingest_raw_csv_to_bronze(
             spark=spark,
             source_path=f"{data_dir}/products.csv",
             target_path=f"{warehouse_dir}/bronze/products",
             schema=PRODUCTS_SCHEMA,
+            key_col="product_id",
         ),
     }
 

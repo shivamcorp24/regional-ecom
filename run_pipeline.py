@@ -1,28 +1,16 @@
 """Runs the data processing pipeline: Bronze, Silver, Gold, Postgres load, and reconciliation."""
 
-import os
 import sys
 import time
 from typing import Any
 
+from core.landing import verify_landing_files
 from jobs.bronze.pipeline import run_bronze_pipeline
 from jobs.gold.pipeline import run_gold_pipeline
 from jobs.load_jdbc import run_serving_pipeline
 from jobs.silver.pipeline import run_silver_pipeline
 from src.reconcile import run_reconciliation
 from src.spark.session import get_spark_session
-
-
-def verify_landing_data_exists(data_dir: str = "data") -> None:
-    """Checks that required source CSV files exist."""
-    required_files = ["customers.csv", "products.csv", "raw_orders.csv"]
-    missing = [f for f in required_files if not os.path.exists(os.path.join(data_dir, f))]
-    if missing:
-        print(f"\n[ERROR] Missing required landing files: {missing}", file=sys.stderr)
-        print("Data processing cannot start without raw landed data.", file=sys.stderr)
-        print("Run the data generator service first:", file=sys.stderr)
-        print(f"  python -m services.data_generator.run_service --mode oneshot --output-dir {data_dir}\n", file=sys.stderr)
-        raise FileNotFoundError(f"Missing required landing files: {missing}")
 
 
 def run_master_pipeline(data_dir: str = "data") -> dict[str, Any]:
@@ -34,7 +22,7 @@ def run_master_pipeline(data_dir: str = "data") -> dict[str, Any]:
     print("=" * 80 + "\n")
 
     print(">>> [STAGE 1/5] Checking landing data files...")
-    verify_landing_data_exists(data_dir=data_dir)
+    verify_landing_files(data_dir=data_dir)
     print(">>> [STAGE 1/5] Landing data verified.\n")
 
     spark = get_spark_session(app_name="DataProcessingPipeline")

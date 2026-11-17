@@ -42,6 +42,8 @@ def run_service(
                 num_records=batch_records,
                 output_path=f"{output_dir}/raw_orders.csv",
                 start_order_id=current_order_id,
+                append=True,
+                duplicate_seed=None,
             )
             current_order_id += batch_records
             print(f"Batch {batch_num} completed ({count} total records).")

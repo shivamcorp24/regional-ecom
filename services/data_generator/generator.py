@@ -91,6 +91,8 @@ def generate_raw_orders(
     num_records: int = 950,
     output_path: str = "data/raw_orders.csv",
     start_order_id: int = 10001,
+    append: bool = False,
+    duplicate_seed: int | None = 42,
 ) -> int:
     """Generates raw orders with random data quality issues and saves to CSV."""
     records = []
@@ -126,11 +128,12 @@ def generate_raw_orders(
 
     df = pd.DataFrame(records)
 
-    duplicates = df.sample(n=min(50, len(df)), random_state=42)
+    duplicates = df.sample(n=min(50, len(df)), random_state=duplicate_seed)
     df = pd.concat([df, duplicates], ignore_index=True)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    df.to_csv(output_path, index=False)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    write_header = not (append and os.path.exists(output_path) and os.path.getsize(output_path) > 0)
+    df.to_csv(output_path, mode="a" if append else "w", header=write_header, index=False)
     return len(df)
 
 

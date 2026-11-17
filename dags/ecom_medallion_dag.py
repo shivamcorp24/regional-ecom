@@ -7,6 +7,8 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
+from core.landing import verify_landing_files
+
 default_args = {
     "owner": "data_engineering",
     "depends_on_past": False,
@@ -15,20 +17,6 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=2),
 }
-
-
-def verify_landing_files(data_dir: str = "data") -> None:
-    """Checks that source files exist before running downstream tasks."""
-    required_files = ["customers.csv", "products.csv", "raw_orders.csv"]
-    missing = []
-    for f in required_files:
-        path = os.path.join(data_dir, f)
-        if not os.path.exists(path) or os.path.getsize(path) == 0:
-            missing.append(f)
-
-    if missing:
-        raise FileNotFoundError(f"Missing required landing files: {missing}")
-    print(f"Verified landing files in '{data_dir}': {required_files}")
 
 
 with DAG(
