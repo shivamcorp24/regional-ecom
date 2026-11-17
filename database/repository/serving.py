@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 import uuid
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from database.models import Customer, DateDimension, Order, Product
@@ -23,8 +23,44 @@ class ServingRepository:
         self.session.execute(delete(DateDimension))
         self.session.flush()
 
+    def truncate_serving_tables(self) -> None:
+        """Empties fact and dimension tables in one statement (transactional in PostgreSQL)."""
+        self.session.execute(text("TRUNCATE TABLE fact_orders, dim_customers, dim_products, dim_date CASCADE"))
+
     def transfer_staging_to_serving(self) -> dict[str, int]:
-        """Reads rows from staging tables and inserts them into serving tables."""
+        """Set-based bulk load: INSERT ... SELECT from staging, executed inside PostgreSQL.
+
+        Dimensions are loaded before the fact table so foreign keys resolve. Casts mirror the
+        ORM column types; NULL discounts default to 0.00.
+        """
+        statements = {
+            "loaded_customers": """
+                INSERT INTO dim_customers (customer_id, first_name, last_name, phone, city, state, region, country)
+                SELECT customer_id::uuid, first_name, last_name, phone, city, state, region, country
+                FROM stg_customers
+            """,
+            "loaded_products": """
+                INSERT INTO dim_products (product_id, product_name, category, unit_price)
+                SELECT product_id::uuid, product_name, category, unit_price
+                FROM stg_products
+            """,
+            "loaded_dates": """
+                INSERT INTO dim_date (date_key, full_date, cal_year, cal_quarter, cal_month, cal_day, day_of_week)
+                SELECT date_key::integer, full_date, cal_year, cal_quarter, cal_month, cal_day, day_of_week
+                FROM stg_date
+            """,
+            "loaded_orders": """
+                INSERT INTO fact_orders (order_id, customer_id, product_id, date_key, order_ts, quantity,
+                                         unit_price, discount, gross_revenue, net_revenue)
+                SELECT order_id::uuid, customer_id::uuid, product_id::uuid, date_key::integer, order_ts, quantity,
+                       unit_price, COALESCE(discount, 0.00), gross_revenue, net_revenue
+                FROM stg_orders
+            """,
+        }
+        return {key: self.session.execute(text(sql)).rowcount for key, sql in statements.items()}
+
+    def transfer_staging_to_serving_orm(self) -> dict[str, int]:
+        """ORM row-by-row transfer. Slower; kept for small loads and as a reference implementation."""
         cust_rows = self.session.execute(select(stg_customers)).mappings().all()
         customers = [
             Customer(
