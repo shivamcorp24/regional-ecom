@@ -1,23 +1,12 @@
 """Airflow DAG for the e-commerce data pipeline."""
 
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
 from core.landing import verify_landing_files
-
-default_args = {
-    "owner": "data_engineering",
-    "depends_on_past": False,
-    "email_on_failure": False,
-    "email_on_retry": False,
-    "retries": 1,
-    "retry_delay": timedelta(minutes=2),
-}
-
+from ecom_dag_utils import DATA_DIR, default_args, python_module_task
 
 with DAG(
     dag_id="regional_ecom_medallion_pipeline",
@@ -33,37 +22,13 @@ with DAG(
     check_landing_data = PythonOperator(
         task_id="check_landing_data",
         python_callable=verify_landing_files,
-        op_kwargs={"data_dir": os.getenv("DATA_LANDING_DIR", "data")},
+        op_kwargs={"data_dir": DATA_DIR},
     )
 
-    bronze_task = BashOperator(
-        task_id="bronze_ingestion",
-        bash_command="python -m jobs.bronze.pipeline",
-        env={**os.environ, "PYTHONPATH": "."},
-    )
-
-    silver_task = BashOperator(
-        task_id="silver_transformation",
-        bash_command="python -m jobs.silver.pipeline",
-        env={**os.environ, "PYTHONPATH": "."},
-    )
-
-    gold_task = BashOperator(
-        task_id="gold_marts",
-        bash_command="python -m jobs.gold.pipeline",
-        env={**os.environ, "PYTHONPATH": "."},
-    )
-
-    reverse_etl_task = BashOperator(
-        task_id="reverse_etl_serving",
-        bash_command="python -m jobs.load_jdbc",
-        env={**os.environ, "PYTHONPATH": "."},
-    )
-
-    reconcile_task = BashOperator(
-        task_id="parity_reconciliation",
-        bash_command="python -m src.reconcile",
-        env={**os.environ, "PYTHONPATH": "."},
-    )
+    bronze_task = python_module_task("bronze_ingestion", "jobs.bronze.pipeline")
+    silver_task = python_module_task("silver_transformation", "jobs.silver.pipeline")
+    gold_task = python_module_task("gold_marts", "jobs.gold.pipeline")
+    reverse_etl_task = python_module_task("reverse_etl_serving", "jobs.load_jdbc")
+    reconcile_task = python_module_task("parity_reconciliation", "src.reconcile")
 
     check_landing_data >> bronze_task >> silver_task >> gold_task >> reverse_etl_task >> reconcile_task

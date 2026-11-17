@@ -1,22 +1,28 @@
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.3
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: regional-ecom-airflow:latest
   environment:
     - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
     - AIRFLOW__CORE__LOAD_EXAMPLES=false
     - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false
-    - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqJZPo=
-    - AIRFLOW__WEBSERVER__SECRET_KEY=secret_key_for_regional_ecom_airflow
+    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_WEBSERVER_SECRET_KEY:?set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
     - PYTHONPATH=/opt/spark-app
-    - SPARK_MASTER=spark://spark-master:7077
+    - PROJECT_DIR=/opt/spark-app
+    - DATA_LANDING_DIR=/opt/spark-app/data
+    # Airflow runs Spark in local mode inside its own container (the standalone cluster is not used).
+    - SPARK_MASTER=local[*]
     - POSTGRES_HOST=postgres
     - POSTGRES_PORT=5432
-    - POSTGRES_DB=regional_ecom
-    - POSTGRES_USER=postgres
-    - POSTGRES_PASSWORD=postgres
+    - POSTGRES_DB=${POSTGRES_DB}
+    - POSTGRES_USER=${POSTGRES_USER}
+    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
   volumes:
     - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
+    - airflow-logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./:/opt/spark-app
   networks:
@@ -27,9 +33,9 @@ services:
     image: postgres:16
     container_name: regional-ecom-postgres
     environment:
-      POSTGRES_DB: regional_ecom
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5434:5432"
     volumes:
@@ -38,7 +44,7 @@ services:
       - spark-net
     restart: "no"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d regional_ecom"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -97,9 +103,9 @@ services:
       SPARK_MASTER: spark://spark-master:7077
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DB: regional_ecom
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       SPARK_SUBMIT_ARGS: "--packages io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3 pyspark-shell"
       PYTHONPATH: "/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip:/opt/spark-app"
     volumes:
@@ -115,11 +121,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: >
-      bash -c "
-      airflow db migrate &&
-      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true
-      "
+    # The image entrypoint waits for the Airflow DB before running anything, but this step is what
+    # creates it, so bypass the entrypoint here.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        python /opt/spark-app/scripts/create_airflow_db.py &&
+        airflow db migrate &&
+        (airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --password ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env} --firstname Admin --lastname User --role Admin --email admin@example.com || true)
 
   airflow-webserver:
     <<: *airflow-common
@@ -143,6 +152,7 @@ services:
 
 volumes:
   pgdata:
+  airflow-logs:
 
 networks:
   spark-net:

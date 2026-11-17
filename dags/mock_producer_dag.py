@@ -1,18 +1,10 @@
 """Airflow DAG to trigger the synthetic data generator."""
 
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 
-default_args = {
-    "owner": "data_engineering",
-    "depends_on_past": False,
-    "email_on_failure": False,
-    "retries": 1,
-    "retry_delay": timedelta(minutes=1),
-}
+from ecom_dag_utils import default_args, python_module_task
 
 with DAG(
     dag_id="upstream_ecom_data_producer",
@@ -24,8 +16,8 @@ with DAG(
     tags=["producer", "data-generator"],
 ) as dag:
 
-    generate_landing_batch = BashOperator(
-        task_id="generate_mock_source_feed",
-        bash_command="python -m services.data_generator.run_service --mode oneshot --output-dir data",
-        env={**os.environ, "PYTHONPATH": "."},
+    generate_landing_batch = python_module_task(
+        "generate_mock_source_feed",
+        "services.data_generator.run_service",
+        "--mode oneshot --output-dir data",
     )
