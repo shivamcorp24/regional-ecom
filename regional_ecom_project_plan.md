@@ -47,10 +47,11 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 ## Module 1: Data Generation — complete
 *`services/data_generator/` (`generator.py`, `run_service.py`).*
 
-- **1.1** `raw_orders.csv` (default 950 orders + 50 duplicates), `customers.csv`, `products.csv`.
+- **1.1** `raw_orders.csv` (default 5000 orders + 50 duplicates), `customers.csv`, `products.csv`.
 - **1.2** Injected defects: exact duplicate rows, 5 mixed date formats (several day/month ambiguous),
   NULL names/cities/discounts, negative quantity and price.
-- **1.3** `oneshot` and `continuous` modes; continuous appends batches without overwriting earlier orders.
+- **1.3** `oneshot`, `append` and `continuous` modes; `append` adds an unseeded batch (GUID order ids,
+  ~5% duplicates) without overwriting earlier orders and is what the producer DAG runs.
 - The feed uses integer business keys; Silver derives deterministic UUID5 keys.
 - `src/generate_data.py` is the original standalone generator and is no longer used.
 
@@ -61,13 +62,13 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - **2.4** Unconstrained staging tables `stg_*` in `database/models/staging.py`.
 
 ## Module 3: Platform (Docker & Spark) — complete
-- **3.1** `docker-compose.yml`: `postgres` (healthcheck), `spark-master`, `spark-worker`,
-  `spark-job` runner, `data-generator`, and Airflow (`airflow-init`, webserver, scheduler).
+- **3.1** `docker-compose.yml` (follows the official Airflow-in-Docker layout): `postgres` (healthcheck,
+  `database/init.sql` creates the `airflow` database) and Airflow (`airflow-init`, webserver, scheduler).
 - **3.2** `src/spark/session.py`: Delta Lake extension and catalog, Postgres JDBC package, UTC timezone.
 - **3.3** `Dockerfile`: Airflow 2.9.3 image with Java and a separate project virtualenv
   (Airflow pins SQLAlchemy 1.4, which conflicts with the project).
 - **3.4** Secrets (Airflow keys, admin password, Postgres credentials) are read from `.env`.
-- Airflow runs Spark in `local[*]` inside its container; the standalone cluster is not used by the DAGs.
+- Spark runs in `local[*]` inside the Airflow containers; there is no Spark cluster.
 
 ## Module 4: Medallion ETL — complete
 
@@ -101,8 +102,9 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - **6.1** Queries for the Postgres side in `database/repository/analytics.py`.
 - **6.2** `src/reconcile.py` checks row counts, financial totals, monthly and category revenue, and
   the top spender per region; writes `warehouse/reconciliation_report.json`; raises on drift.
-- **6.3** Airflow DAGs in `dags/`: `regional_ecom_medallion_pipeline` (`@daily`) and
-  `upstream_ecom_data_producer` (manual), sharing helpers in `ecom_dag_utils.py`.
+- **6.3** Airflow DAGs in `dags/`: `regional_ecom_medallion_pipeline` (every 30 min, with a
+  `migrate_warehouse` Alembic task before Bronze) and `upstream_ecom_data_producer` (every 2 min,
+  append mode), sharing helpers in `ecom_dag_utils.py`.
 - **6.4** `run_pipeline.py` runs all stages in one process. `core/landing.py` is the shared
   landing-file check.
 - **6.5** Tests in `tests/` cover the generator, the landing check, Bronze idempotency, the Gold

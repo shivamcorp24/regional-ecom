@@ -116,22 +116,22 @@ core/
   landing.py                shared landing-file check (CLI and Airflow)
 dags/
   ecom_dag_utils.py         shared DAG settings and python_module_task helper
-  ecom_medallion_dag.py     regional_ecom_medallion_pipeline (@daily)
-  mock_producer_dag.py      upstream_ecom_data_producer (manual trigger)
+  ecom_medallion_dag.py     regional_ecom_medallion_pipeline (every 30 min)
+  mock_producer_dag.py      upstream_ecom_data_producer (every 2 min, append mode)
 database/
+  init.sql                  creates the separate `airflow` database on first Postgres start
   models/                   SQLAlchemy ORM models + staging tables
   repository/serving.py     set-based staging -> serving swap (ORM path kept for small loads)
   repository/analytics.py   Postgres queries used by reconciliation
 jobs/{bronze,silver,gold}/  pipeline.py coordinator + schema/transforms per layer
 jobs/load_jdbc.py           reverse-ETL: Spark JDBC staging + serving swap
-scripts/create_airflow_db.py  creates the Airflow metadata DB (run by airflow-init)
-services/data_generator/    synthetic feed generator (oneshot / continuous)
+services/data_generator/    synthetic feed generator (oneshot / append / continuous)
 src/reconcile.py            Delta vs Postgres parity checks
 src/spark/session.py        SparkSession with Delta Lake + Postgres JDBC
 tests/                      pytest: generator, landing check, Bronze, Gold tie-break (Spark, local),
                             serving swap (needs migrated Postgres; skips if it is down)
 Dockerfile                  Airflow image: Java + a project virtualenv
-docker-compose.yml          Postgres, Spark master/worker, Airflow
+docker-compose.yml          Postgres + Airflow (init, webserver, scheduler), per the official Airflow compose
 run_pipeline.py             run all stages in one process
 ```
 
@@ -182,16 +182,19 @@ uv run python -m src.reconcile
 ```bash
 docker compose up -d            # builds the image on first run
 ```
-Open http://localhost:8085 and sign in with the admin user from `.env`. Trigger
-`upstream_ecom_data_producer`, then `regional_ecom_medallion_pipeline`:
-`check_landing_data` → `bronze_ingestion` → `silver_transformation` → `gold_marts` →
+Open http://localhost:8085 and sign in with the admin user from `.env`. Both DAGs are unpaused and
+scheduled: `upstream_ecom_data_producer` appends a batch every 2 minutes and
+`regional_ecom_medallion_pipeline` runs every 30 minutes (you can also trigger either manually):
+`check_landing_data` → `migrate_warehouse` (`alembic upgrade head`) → `bronze_ingestion` → `silver_transformation` → `gold_marts` →
 `reverse_etl_serving` → `parity_reconciliation`.
 
-Notes: Airflow runs Spark in `local[*]` inside its own container (the Spark master/worker in
-compose are not used by the DAGs). The image keeps the project dependencies in a separate
-virtualenv because Airflow 2.9 pins SQLAlchemy 1.4; keep the dependency list in the `Dockerfile`
-in sync with `pyproject.toml`. The two DAGs are not linked, so the pipeline DAG does not start
-automatically after the producer.
+Notes: Spark runs in `local[*]` inside the Airflow containers; there is no Spark cluster.
+The compose file follows the official Airflow-in-Docker layout. `database/init.sql` only runs when
+the Postgres volume is first created, so an existing volume without an `airflow` database needs
+`docker compose down -v`. The image keeps the project dependencies in a separate virtualenv because
+Airflow 2.9 pins SQLAlchemy 1.4; keep the dependency list in the `Dockerfile` in sync with
+`pyproject.toml`. The two DAGs are not linked; they run on independent schedules. The first
+pipeline run takes about 9 minutes because Spark runs in local mode.
 
 ### Tests
 ```bash
@@ -212,10 +215,11 @@ stamp. `core.database.drop_db()` is the hard reset (drops tables and `alembic_ve
 ## Source data
 
 The generator writes `customers.csv`, `products.csv` and `raw_orders.csv` into `data/`
-(gitignored). Defaults: 950 orders (plus 50 duplicates) and 50 customers; `--seed` makes runs
+(gitignored). Defaults: 5000 orders (plus 50 duplicates) and 500 customers; `--seed` makes runs
 reproducible. The feed contains duplicate rows, five date formats, NULL names/cities/discounts,
 and negative quantities and prices. `--mode continuous` appends 100 orders every `--interval`
-seconds. Business keys in the feed are plain integers; Silver derives deterministic UUID5 keys.
+seconds. `--mode append` (used by the producer DAG) adds one unseeded batch of `--records` orders
+with GUID order ids and ~5% duplicates, and only creates customers/products if missing. Business keys in the feed are plain integers; Silver derives deterministic UUID5 keys.
 `src/generate_data.py` is an older standalone generator that the pipeline no longer uses.
 
 ## Reconciliation
