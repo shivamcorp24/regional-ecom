@@ -1,37 +1,34 @@
+# Layout follows the official "Running Airflow in Docker" compose file:
+# https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html
+# Spark runs in local mode inside the Airflow containers, so no Spark cluster is needed.
+
 x-airflow-common: &airflow-common
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: regional-ecom-airflow:latest
-  environment:
-    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
-    - AIRFLOW__CORE__LOAD_EXAMPLES=false
-    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false
-    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
-    - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_WEBSERVER_SECRET_KEY:?set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
-    - PYTHONPATH=/opt/spark-app
-    - PROJECT_DIR=/opt/spark-app
-    - DATA_LANDING_DIR=/opt/spark-app/data
-    # Airflow runs Spark in local mode inside its own container (the standalone cluster is not used).
-    - SPARK_MASTER=local[*]
-    - POSTGRES_HOST=postgres
-    - POSTGRES_PORT=5432
-    - POSTGRES_DB=${POSTGRES_DB}
-    - POSTGRES_USER=${POSTGRES_USER}
-    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+  build: .
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/spark-app/dags
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    PYTHONPATH: /opt/spark-app
+    # Used by the pipeline code to reach the warehouse database.
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
   volumes:
-    - ./dags:/opt/airflow/dags
-    - airflow-logs:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
     - ./:/opt/spark-app
-  networks:
-    - spark-net
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
   postgres:
     image: postgres:16
-    container_name: regional-ecom-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -40,119 +37,42 @@ services:
       - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    networks:
-      - spark-net
-    restart: "no"
+      # Creates the separate "airflow" metadata database (only when the volume is first created).
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
+      interval: 10s
       retries: 5
+      start_period: 5s
+    restart: "no"
 
-  # Independent Upstream Producer Service (Data Generator)
-  data-generator:
-    image: python:3.11-slim
-    container_name: regional-ecom-data-generator
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command: >
-      sh -c "pip install --no-cache-dir pandas &&
-             python -m services.data_generator.run_service --mode oneshot --output-dir /app/data"
-    networks:
-      - spark-net
-
-  spark-master:
-    image: apache/spark:3.5.1
-    container_name: regional-ecom-spark-master
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
-    ports:
-      - "7077:7077"
-      - "8080:8080"
-    volumes:
-      - ./:/opt/spark-app
-    networks:
-      - spark-net
-
-  spark-worker:
-    image: apache/spark:3.5.1
-    container_name: regional-ecom-spark-worker
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    depends_on:
-      - spark-master
-    environment:
-      SPARK_WORKER_CORES: 2
-      SPARK_WORKER_MEMORY: 2G
-    ports:
-      - "8081:8081"
-    volumes:
-      - ./:/opt/spark-app
-    networks:
-      - spark-net
-
-  spark-job:
-    image: apache/spark:3.5.1
-    container_name: regional-ecom-spark-job
-    command: ["tail", "-f", "/dev/null"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      spark-master:
-        condition: service_started
-    environment:
-      SPARK_MASTER: spark://spark-master:7077
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      SPARK_SUBMIT_ARGS: "--packages io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3 pyspark-shell"
-      PYTHONPATH: "/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip:/opt/spark-app"
-    volumes:
-      - ./:/opt/spark-app
-    working_dir: /opt/spark-app
-    networks:
-      - spark-net
-
-  # Airflow Services for Automated Pipeline Orchestration
   airflow-init:
     <<: *airflow-common
-    container_name: regional-ecom-airflow-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    # The image entrypoint waits for the Airflow DB before running anything, but this step is what
-    # creates it, so bypass the entrypoint here.
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - >
-        python /opt/spark-app/scripts/create_airflow_db.py &&
-        airflow db migrate &&
-        (airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --password ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env} --firstname Admin --lastname User --role Admin --email admin@example.com || true)
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}
 
   airflow-webserver:
     <<: *airflow-common
-    container_name: regional-ecom-airflow-webserver
+    command: webserver
+    ports:
+      - "8085:8080"
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    ports:
-      - "8085:8080"
-    command: webserver
-    restart: always
+    restart: "no"
 
   airflow-scheduler:
     <<: *airflow-common
-    container_name: regional-ecom-airflow-scheduler
+    command: scheduler
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    command: scheduler
-    restart: always
+    restart: "no"
 
 volumes:
   pgdata:
-  airflow-logs:
-
-networks:
-  spark-net:
