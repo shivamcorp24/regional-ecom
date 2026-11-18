@@ -2,6 +2,7 @@
 
 import os
 import random
+import uuid
 from datetime import datetime, timedelta
 import pandas as pd
 
@@ -93,12 +94,17 @@ def generate_raw_orders(
     start_order_id: int = 10001,
     append: bool = False,
     duplicate_seed: int | None = 42,
+    num_customers: int = 50,
+    duplicate_count: int = 50,
+    use_guids: bool = False,
 ) -> int:
     """Generates raw orders with random data quality issues and saves to CSV."""
     records = []
 
-    for order_id in range(start_order_id, start_order_id + num_records):
-        customer_id = random.randint(1, 50)
+    for n in range(num_records):
+        # GUIDs need no coordination with earlier batches; integer ids continue from start_order_id.
+        order_id = str(uuid.uuid4()) if use_guids else start_order_id + n
+        customer_id = random.randint(1, num_customers)
         full_name = f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
         city = random.choice(CITIES)
 
@@ -128,7 +134,7 @@ def generate_raw_orders(
 
     df = pd.DataFrame(records)
 
-    duplicates = df.sample(n=min(50, len(df)), random_state=duplicate_seed)
+    duplicates = df.sample(n=min(duplicate_count, len(df)), random_state=duplicate_seed)
     df = pd.concat([df, duplicates], ignore_index=True)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -137,9 +143,38 @@ def generate_raw_orders(
     return len(df)
 
 
+def generate_incremental_batch(
+    records: int = 5000,
+    customers: int = 500,
+    output_dir: str = "data",
+) -> dict[str, int]:
+    """Appends a fresh batch of orders with GUID order_ids (unseeded, so data differs each call).
+
+    Customers and products are static master data and are only written if missing.
+    """
+    orders_path = f"{output_dir}/raw_orders.csv"
+    if not os.path.exists(f"{output_dir}/customers.csv"):
+        generate_customers(num_customers=customers, output_path=f"{output_dir}/customers.csv")
+    if not os.path.exists(f"{output_dir}/products.csv"):
+        generate_products(output_path=f"{output_dir}/products.csv")
+
+    # Customer ids in the master file bound the ids orders may reference.
+    num_customers = int(pd.read_csv(f"{output_dir}/customers.csv", usecols=["customer_id"])["customer_id"].max())
+    count = generate_raw_orders(
+        num_records=records,
+        output_path=orders_path,
+        use_guids=True,
+        append=True,
+        duplicate_seed=None,
+        num_customers=num_customers,
+        duplicate_count=max(1, records // 20),  # ~5% duplicate rows for Silver to dedupe
+    )
+    return {"raw_orders_appended": count}
+
+
 def generate_all(
-    records: int = 950,
-    customers: int = 50,
+    records: int = 5000,
+    customers: int = 500,
     output_dir: str = "data",
     seed: int = 42,
 ) -> dict[str, int]:
@@ -147,5 +182,5 @@ def generate_all(
     random.seed(seed)
     c_count = generate_customers(num_customers=customers, output_path=f"{output_dir}/customers.csv")
     p_count = generate_products(output_path=f"{output_dir}/products.csv")
-    o_count = generate_raw_orders(num_records=records, output_path=f"{output_dir}/raw_orders.csv")
+    o_count = generate_raw_orders(num_records=records, output_path=f"{output_dir}/raw_orders.csv", num_customers=customers)
     return {"customers": c_count, "products": p_count, "raw_orders": o_count}
