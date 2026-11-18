@@ -5,11 +5,20 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from core.config import get_settings
 from database.models import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# Use the same connection settings as the rest of the project (.env / environment variables)
+# instead of the URL hardcoded in alembic.ini, so migrations also work inside Docker.
+# "%" is doubled because Alembic treats the value as a ConfigParser string.
+config.set_main_option(
+    "sqlalchemy.url",
+    get_settings().database_url.render_as_string(hide_password=False).replace("%", "%%"),
+)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
