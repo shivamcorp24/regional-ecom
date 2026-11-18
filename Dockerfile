@@ -21,4 +21,9 @@ RUN python -m venv /home/airflow/ecom-venv \
         "delta-spark>=3.2.0,<3.3.0" \
         "sqlalchemy>=2.1.1"
 
+# Stable path to the pip-installed Spark distribution, so compose can start the standalone
+# master/worker (bin/spark-class) from this same image.
+RUN ln -s "$(/home/airflow/ecom-venv/bin/python -c 'import os, pyspark; print(os.path.dirname(pyspark.__file__))')" /home/airflow/spark
+
 ENV ECOM_PYTHON=/home/airflow/ecom-venv/bin/python
+ENV SPARK_HOME=/home/airflow/spark

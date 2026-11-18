@@ -1,9 +1,20 @@
 # Layout follows the official "Running Airflow in Docker" compose file:
 # https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html
-# Spark runs in local mode inside the Airflow containers, so no Spark cluster is needed.
+# Spark runs as a standalone cluster (spark-master + 2 spark-worker replicas). Airflow tasks are the
+# Spark driver (client mode). Every node mounts the repo at /opt/spark-app so landing, Delta and
+# warehouse paths are identical on the driver and the executors.
+# To fall back to local mode, set SPARK_MASTER=local[*] in .env.
+
+# One image for Airflow and the Spark master/workers (same Java, Python and PySpark everywhere).
+# Compose builds it once: every service shares the context and tag, so BuildKit reuses the layers.
+# Each service keeps the build entry on purpose, so `docker compose up` works on a fresh checkout
+# without a separate build step (a service with only `image:` would try to pull it from a registry).
+x-ecom-image: &ecom-image
+  build: .
+  image: regional-ecom-airflow:latest
 
 x-airflow-common: &airflow-common
-  build: .
+  <<: *ecom-image
   user: "${AIRFLOW_UID:-50000}:0"
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -14,6 +25,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
     PYTHONPATH: /opt/spark-app
+    SPARK_MASTER: ${SPARK_MASTER:-spark://spark-master:7077}
+    SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-1g}
+    SPARK_CORES_MAX: ${SPARK_CORES_MAX:-4}
     # Used by the pipeline code to reach the warehouse database.
     POSTGRES_HOST: postgres
     POSTGRES_PORT: 5432
@@ -46,6 +60,40 @@ services:
       start_period: 5s
     restart: "no"
 
+  # Standalone Spark cluster, built from the same image as Airflow (same Java, Python and PySpark).
+  spark-master:
+    <<: *ecom-image
+    user: "${AIRFLOW_UID:-50000}:0"
+    entrypoint: ["/home/airflow/spark/bin/spark-class"]
+    command: ["org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    ports:
+      - "8080:8080"   # Spark master UI
+    volumes:
+      - ./:/opt/spark-app
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/spark-master/7077"]
+      interval: 10s
+      retries: 10
+      start_period: 10s
+    restart: "no"
+
+  spark-worker:
+    <<: *ecom-image
+    user: "${AIRFLOW_UID:-50000}:0"
+    entrypoint: ["/home/airflow/spark/bin/spark-class"]
+    command: ["org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077", "--cores", "2", "--memory", "2g"]
+    environment:
+      # Python UDFs import project modules (jobs.*) on the executors, so they need the repo on the path.
+      PYTHONPATH: /opt/spark-app
+    volumes:
+      - ./:/opt/spark-app
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    restart: "no"
+
   airflow-init:
     <<: *airflow-common
     command: version
@@ -72,6 +120,8 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      spark-master:
+        condition: service_healthy
     restart: "no"
 
 volumes:

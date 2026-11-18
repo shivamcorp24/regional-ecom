@@ -35,6 +35,13 @@ def get_spark_session(
         .config("spark.pyspark.driver.python", sys.executable)
     )
 
+    # Executor sizing only applies on a standalone cluster (workers offer 2 cores / 2g each).
+    if master_url.startswith("spark://"):
+        builder = builder.config("spark.executor.memory", os.getenv("SPARK_EXECUTOR_MEMORY", "1g"))
+        if os.getenv("SPARK_CORES_MAX"):
+            # Cap total cores so one application cannot take every worker.
+            builder = builder.config("spark.cores.max", os.environ["SPARK_CORES_MAX"])
+
     return builder.getOrCreate()
 
 
