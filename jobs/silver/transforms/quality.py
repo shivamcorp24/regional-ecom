@@ -7,6 +7,11 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, current_timestamp, lit, when
 
 
+# Rejections caused by master data that may simply not have arrived yet. Orders quarantined for
+# these reasons are re-evaluated on later runs; every other reason is a defect in the order itself.
+RETRYABLE_REJECT_REASONS = ("UNKNOWN_CUSTOMER_ID", "UNKNOWN_PRODUCT_ID")
+
+
 def evaluate_data_quality(
     orders_df: DataFrame,
     customers_df: DataFrame,
