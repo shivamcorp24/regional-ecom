@@ -24,7 +24,8 @@ SILVER   warehouse/silver/        dedupe, 5-format regex date parsing, UUID5 key
          warehouse/quarantine/    DecimalType(14,2) revenue, quality rules.
                                   Delta MERGE upserts, OPTIMIZE ZORDER on orders.
                                   Rejected rows -> quarantine with reject_reason
-                                  + quality_report.json.
+                                  + quality_report.json (counts are for the latest batch).
+                                  Incremental: only new orders (plus retryable quarantined ones) are processed.
                                       │
                                       ▼
 GOLD     warehouse/gold/          monthly_revenue, top_customers_per_region,
@@ -47,7 +48,10 @@ RECONCILE    src/reconcile.py     Delta vs Postgres: row counts, financial total
 An order is quarantined with the first matching reason:
 `MISSING_ORDER_ID`, `INVALID_DATE_FORMAT`, `INVALID_QUANTITY`, `INVALID_PRICE`,
 `NEGATIVE_DISCOUNT`, `DISCOUNT_EXCEEDS_GROSS`, `UNKNOWN_CUSTOMER_ID`, `UNKNOWN_PRODUCT_ID`.
-Duplicate `order_id`s are dropped before validation.
+Duplicate `order_id`s are dropped before validation. Silver is incremental: an order already in Silver
+is skipped on later runs, and so is one quarantined for a defect of its own. Orders rejected as
+`UNKNOWN_CUSTOMER_ID` or `UNKNOWN_PRODUCT_ID` are retried every run, so they move from quarantine to
+Silver once the customer or product arrives. Quarantine is merged on `order_id` (never appended twice).
 
 ### Date formats handled
 `yyyy-MM-dd`, `MM/dd/yyyy`, `dd-MM-yyyy`, `yyyy/MM/dd HH:mm:ss`, `dd/MM/yyyy HH:mm`.
@@ -130,8 +134,8 @@ src/reconcile.py            Delta vs Postgres parity checks
 src/spark/session.py        SparkSession with Delta Lake + Postgres JDBC
 tests/                      pytest: generator, landing check, Bronze, Gold tie-break (Spark, local),
                             serving swap (needs migrated Postgres; skips if it is down)
-Dockerfile                  Airflow image: Java + a project virtualenv
-docker-compose.yml          Postgres + Airflow (init, webserver, scheduler), per the official Airflow compose
+Dockerfile                  Airflow/Spark image: Java + a project virtualenv (also runs the Spark master/workers)
+docker-compose.yml          Postgres, standalone Spark cluster (master + 2 workers), Airflow (init, webserver, scheduler)
 run_pipeline.py             run all stages in one process
 ```
 
@@ -188,13 +192,16 @@ scheduled: `upstream_ecom_data_producer` appends a batch every 2 minutes and
 `check_landing_data` → `migrate_warehouse` (`alembic upgrade head`) → `bronze_ingestion` → `silver_transformation` → `gold_marts` →
 `reverse_etl_serving` → `parity_reconciliation`.
 
-Notes: Spark runs in `local[*]` inside the Airflow containers; there is no Spark cluster.
-The compose file follows the official Airflow-in-Docker layout. `database/init.sql` only runs when
+Notes: Spark runs on a standalone cluster (`spark-master` + 2 `spark-worker` replicas, 2 cores / 2 GB each).
+Airflow tasks are the Spark driver (client mode) and reach the master at `spark://spark-master:7077`;
+the master UI is http://localhost:8080. All nodes are built from the same image and mount the repo at
+`/opt/spark-app`, so landing, Delta and warehouse paths are identical on the driver and the executors.
+Set `SPARK_MASTER=local[*]` in `.env` to run in local mode instead; `SPARK_EXECUTOR_MEMORY` and
+`SPARK_CORES_MAX` tune the application. The compose file follows the official Airflow-in-Docker layout. `database/init.sql` only runs when
 the Postgres volume is first created, so an existing volume without an `airflow` database needs
 `docker compose down -v`. The image keeps the project dependencies in a separate virtualenv because
 Airflow 2.9 pins SQLAlchemy 1.4; keep the dependency list in the `Dockerfile` in sync with
-`pyproject.toml`. The two DAGs are not linked; they run on independent schedules. The first
-pipeline run takes about 9 minutes because Spark runs in local mode.
+`pyproject.toml`. The two DAGs are not linked; they run on independent schedules.
 
 ### Tests
 ```bash

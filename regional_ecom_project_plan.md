@@ -14,7 +14,7 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 ```
 [ Raw CSV source: raw_orders.csv / customers.csv / products.csv ]
           │
-          │  PySpark batch pipeline (host, or Airflow container in local mode)
+          │  PySpark batch pipeline (host in local mode, or Docker with a standalone Spark cluster)
           ▼
   ┌─ BRONZE ─ append-only Delta tables + ingest_ts, source_file
   │      │      warehouse/bronze/  (rows with an existing key are skipped on rerun)
@@ -62,13 +62,15 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - **2.4** Unconstrained staging tables `stg_*` in `database/models/staging.py`.
 
 ## Module 3: Platform (Docker & Spark) — complete
-- **3.1** `docker-compose.yml` (follows the official Airflow-in-Docker layout): `postgres` (healthcheck,
-  `database/init.sql` creates the `airflow` database) and Airflow (`airflow-init`, webserver, scheduler).
+- **3.1** `docker-compose.yml` (Airflow part follows the official Airflow-in-Docker layout): `postgres` (healthcheck,
+  `database/init.sql` creates the `airflow` database), a standalone Spark cluster (`spark-master` and 2
+  `spark-worker` replicas built from the Airflow image) and Airflow (`airflow-init`, webserver, scheduler).
 - **3.2** `src/spark/session.py`: Delta Lake extension and catalog, Postgres JDBC package, UTC timezone.
 - **3.3** `Dockerfile`: Airflow 2.9.3 image with Java and a separate project virtualenv
   (Airflow pins SQLAlchemy 1.4, which conflicts with the project).
 - **3.4** Secrets (Airflow keys, admin password, Postgres credentials) are read from `.env`.
-- Spark runs in `local[*]` inside the Airflow containers; there is no Spark cluster.
+- Airflow tasks are the Spark driver (client mode) against `spark://spark-master:7077`; every node mounts
+  the repo at `/opt/spark-app` so file paths match. `SPARK_MASTER=local[*]` falls back to local mode.
 
 ## Module 4: Medallion ETL — complete
 
@@ -77,13 +79,18 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - Append to Delta, skipping rows whose key (`order_id`, `customer_id`, `product_id`) already exists.
 
 ### 4.2 Silver (`jobs/silver/`, `transforms/`)
-- Shape-based regex date parser for 5 formats (`dates.py`); dense calendar between min and max order date.
+- Shape-based regex date parser for 5 formats (`dates.py`); dense calendar between min and max order date (extended with the dates Silver already covers).
 - Customer and product cleaning with deterministic UUID5 keys (`dimensions.py`).
 - `DecimalType(14,2)` gross and net revenue (`financials.py`).
 - Rule-based quality checks and quarantine with `reject_reason` (`quality.py`):
   `MISSING_ORDER_ID`, `INVALID_DATE_FORMAT`, `INVALID_QUANTITY`, `INVALID_PRICE`,
   `NEGATIVE_DISCOUNT`, `DISCOUNT_EXCEEDS_GROSS`, `UNKNOWN_CUSTOMER_ID`, `UNKNOWN_PRODUCT_ID`.
   (Hand-written rules; Great Expectations is not used.)
+- Incremental orders: only Bronze orders that are not in Silver and not quarantined for a final reason are
+  processed (`select_unprocessed_orders`), so run time follows the batch size. Orders rejected for a missing
+  customer or product (`RETRYABLE_REJECT_REASONS`) are retried each run and leave quarantine once valid.
+  Quarantine is merged on `order_id`, never appended twice; writes are idempotent and ordered so a crash
+  leaves an order in Silver, in quarantine, or in neither (and so reprocessed). The quality report is written last.
 - Delta `MERGE INTO` upserts and `OPTIMIZE ... ZORDER BY (customer_id, order_ts)` (`upsert.py`).
 
 ### 4.3 Gold (`jobs/gold/`)
@@ -107,9 +114,10 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
   append mode), sharing helpers in `ecom_dag_utils.py`.
 - **6.4** `run_pipeline.py` runs all stages in one process. `core/landing.py` is the shared
   landing-file check.
-- **6.5** Tests in `tests/` cover the generator, the landing check, Bronze idempotency, the Gold
+- **6.5** Tests in `tests/` cover the generator, the landing check, Bronze idempotency, Silver
+  incremental processing (no reprocessing, no duplicate quarantine rows, retry of orders with missing master data), the Gold
   top-customer tie-break (Spark, local, no Docker) and the serving swap (needs Postgres; skips if
-  it is down). Silver, the reconciliation logic and the DAGs are not covered.
+  it is down). The Silver transforms, the reconciliation logic and the DAGs are not covered.
 
 ---
 
