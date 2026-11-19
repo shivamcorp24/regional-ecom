@@ -5,8 +5,8 @@ cleans it through a **Delta Lake Medallion pipeline** (Bronze / Silver / Gold) i
 loads the result into a **PostgreSQL star schema**, and proves the two stores agree with an
 automated **reconciliation** step. The whole flow can run from one script or from **Airflow**.
 
-See `business_overview.md` for a plain-language explanation of the business rules and reports, and
-`regional_ecom_project_plan.md` for the module breakdown and status.
+See `docs/business_overview.md` for a plain-language explanation of the business rules and reports, and
+`docs/regional_ecom_project_plan.md` for the module breakdown and status.
 
 ---
 
