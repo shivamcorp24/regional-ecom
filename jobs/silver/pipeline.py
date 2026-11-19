@@ -15,6 +15,7 @@ from jobs.silver.transforms.dimensions import clean_customers, clean_products, t
 from jobs.silver.transforms.financials import calculate_financial_metrics
 from jobs.silver.transforms.quality import (
     RETRYABLE_REJECT_REASONS,
+    count_rejections,
     evaluate_data_quality,
     generate_and_save_quality_report,
 )
@@ -205,6 +206,8 @@ def run_silver_pipeline(
             valid_orders_count = valid_orders_df.count()
             quarantined_orders_count = quarantine_orders_df.count()
             total_orders_count = valid_orders_count + quarantined_orders_count
+            # Taken before any write: the batch reads Silver and quarantine, which the writes below change.
+            rejection_breakdown = count_rejections(quarantine_orders_df) if quarantined_orders_count > 0 else {}
 
             # Every write below is idempotent and ordered so that a crash at any point leaves each
             # order either in Silver, in quarantine, or in neither (and so picked up again next run).
@@ -260,6 +263,7 @@ def run_silver_pipeline(
                 passed_count=valid_orders_count,
                 quarantine_df=quarantine_orders_df,
                 report_output_path=f"{quarantine_dir}/quality_report.json",
+                rejection_breakdown=rejection_breakdown,
             )
         finally:
             valid_orders_df.unpersist()

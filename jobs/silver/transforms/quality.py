@@ -63,24 +63,29 @@ def evaluate_data_quality(
     return valid_orders_df, quarantine_orders_df
 
 
+def count_rejections(quarantine_df: DataFrame) -> dict[str, int]:
+    """Number of rejected orders per reject_reason."""
+    return {row["reject_reason"]: row["count"] for row in quarantine_df.groupBy("reject_reason").count().collect()}
+
+
 def generate_and_save_quality_report(
     total_count: int,
     passed_count: int,
     quarantine_df: DataFrame,
     report_output_path: str,
+    rejection_breakdown: dict | None = None,
 ) -> dict:
-    """Writes a summary of data quality results to a JSON file."""
+    """Writes a summary of data quality results to a JSON file.
+
+    Pass `rejection_breakdown` (see `count_rejections`) when the report is written after the batch has
+    been saved: the batch DataFrames read the tables that were just updated, so aggregating them
+    afterwards would no longer see the batch.
+    """
     quarantined_count = total_count - passed_count
     pass_rate_pct = round((passed_count / total_count) * 100, 2) if total_count > 0 else 0.0
 
-    rejection_breakdown = {}
-    if quarantined_count > 0:
-        aggregated_rows = (
-            quarantine_df.groupBy("reject_reason")
-            .count()
-            .collect()
-        )
-        rejection_breakdown = {row["reject_reason"]: row["count"] for row in aggregated_rows}
+    if rejection_breakdown is None:
+        rejection_breakdown = count_rejections(quarantine_df) if quarantined_count > 0 else {}
 
     report_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -88,6 +88,9 @@ def test_rerun_does_no_work_and_new_batch_only_processes_new_rows(spark, tmp_pat
 
     assert first["new_orders_count"] == first["valid_orders_count"] + first["quarantined_orders_count"] > 0
     assert first["quarantined_orders_count"] > 0  # the feed has injected defects
+    report = first["quality_report"]
+    assert report["quarantined_records"] == first["quarantined_orders_count"]
+    assert sum(report["rejection_breakdown"].values()) == first["quarantined_orders_count"]
     quarantine = spark.read.format("delta").load(quarantine_path)
     assert quarantine.count() == quarantine.select("order_id").distinct().count()
     quarantined_after_first = quarantine.count()
