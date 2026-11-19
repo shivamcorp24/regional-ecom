@@ -53,7 +53,6 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - **1.3** `oneshot`, `append` and `continuous` modes; `append` adds an unseeded batch (GUID order ids,
   ~5% duplicates) without overwriting earlier orders and is what the producer DAG runs.
 - The feed uses integer business keys; Silver derives deterministic UUID5 keys.
-- `src/generate_data.py` is the original standalone generator and is no longer used.
 
 ## Module 2: Relational Serving Model (PostgreSQL) — complete
 - **2.1** Star schema: `dim_customers`, `dim_products`, `dim_date`, `fact_orders`.
@@ -133,5 +132,5 @@ quarantine, a Spark JDBC **reverse-ETL** into a **PostgreSQL star schema**, and 
 - Full table reload on every run; no incremental load.
 - Staging tables can be left half-updated after a failed write (serving tables stay safe).
 - Default `postgres`/`postgres` database credentials in `.env`.
-- Unused code that could be removed: `src/generate_data.py`, `database/schema/`,
+- Unused code that could be removed: `database/schema/`,
   `database/repository/base.py`, `jobs/silver/schema.py`, `jobs/gold/schema.py`.

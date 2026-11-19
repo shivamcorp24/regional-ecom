@@ -228,7 +228,6 @@ reproducible. The feed contains duplicate rows, five date formats, NULL names/ci
 and negative quantities and prices. `--mode continuous` appends 100 orders every `--interval`
 seconds. `--mode append` (used by the producer DAG) adds one unseeded batch of `--records` orders
 with GUID order ids and ~5% duplicates, and only creates customers/products if missing. Business keys in the feed are plain integers; Silver derives deterministic UUID5 keys.
-`src/generate_data.py` is an older standalone generator that the pipeline no longer uses.
 
 ## Reconciliation
 
