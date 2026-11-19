@@ -15,7 +15,3 @@ warehouse/
 # Runtime logs
 logs/
 derby.log
-
-# Personal interview prep
-docs/interview_script.md
-docs/interview_walkthrough.md
